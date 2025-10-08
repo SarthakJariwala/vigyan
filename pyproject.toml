@@ -1,0 +1,7 @@
+[project]
+name = "vigyan"
+version = "0.0.1"
+description = "High accuracy agentic search on scientific documents with citations"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
