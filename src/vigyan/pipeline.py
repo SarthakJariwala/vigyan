@@ -4,7 +4,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 
-from .core.interfaces import DocumentParser, Embedder, VectorStore
+from .core.interfaces import DocumentParser, VectorStore
 from .core.models import Chunk, Document, QueryHit
 
 
@@ -16,23 +16,21 @@ def ingest_pdf(
     pdf_bytes: bytes,
     meta: Document | None,
     parser: DocumentParser,
-    embedder: Embedder,
     store: VectorStore,
     source_url: str | None = None,
 ) -> Document:
-    """Parse a PDF, create chunks with embeddings, and index them.
+    """Parse a PDF, create chunks, and index them.
 
     - Parses the PDF to paragraphs via `parser`.
     - Builds chunks (simple paragraph-based policy).
-    - Embeds chunk texts via `embedder`.
-    - Upserts document and chunks into `store`.
+    - Upserts document and chunks into `store` (embeddings computed automatically).
     """
 
     # Determine metadata first (avoids double calls if parser can reuse work)
     if meta is None:
         meta = parser.extract_metadata(pdf_bytes)
 
-    paragraphs, tei_xml = parser.parse(pdf_bytes)
+    paragraphs, _ = parser.parse(pdf_bytes)
     pdf_sha = _hash_pdf(pdf_bytes)
 
     base = meta.model_dump(
@@ -47,18 +45,15 @@ def ingest_pdf(
         created_at=meta.created_at or datetime.now(timezone.utc),
     )
 
-    # Build chunks
-    chunk_texts: list[str] = []
+    # Build chunks (embeddings are computed automatically by the store)
     chunks: list[Chunk] = []
     for p in paragraphs:
         chunk_id = str(uuid.uuid4())
-        chunk_texts.append(p.text)
         chunks.append(
             Chunk(
                 chunk_id=chunk_id,
                 doc_id=doc.doc_id,
                 text=p.text,
-                vector=[],  # fill after embedding
                 page_start=p.page_start,
                 page_end=p.page_end,
                 para_ids=[p.para_id] if p.para_id else [],
@@ -73,18 +68,12 @@ def ingest_pdf(
                 doi=doc.doi,
                 arxiv_id=doc.arxiv_id,
                 source_url=source_url or doc.url,
-                embedding_model=embedder.model_name,
-                embedding_dims=embedder.dim,
+                embedding_model=store.model_name,
+                embedding_dims=store.dim,
                 embedding_ts=datetime.now(timezone.utc),
                 parser=type(parser).__name__,
             )
         )
-
-    # Embed and attach vectors
-    if chunk_texts:
-        vectors = embedder.embed(chunk_texts)
-        for ch, v in zip(chunks, vectors):
-            ch.vector = v
 
     # Persist
     store.create_or_open()

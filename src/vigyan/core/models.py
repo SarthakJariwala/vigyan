@@ -34,12 +34,15 @@ class Paragraph(BaseModel):
 
 
 class Chunk(BaseModel):
-    """A chunk suitable for embedding and indexing."""
+    """A chunk suitable for embedding and indexing.
+
+    Note: The vector field is not stored here; embeddings are computed
+    automatically by the vector store (e.g., LanceDB).
+    """
 
     chunk_id: str
     doc_id: str
     text: str
-    vector: list[float]
     page_start: int
     page_end: int
     para_ids: list[str] = []

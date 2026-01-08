@@ -9,9 +9,9 @@ Vigyan provides a small, clean Python API to parse scientific PDFs, embed the co
 Design Principles
 -----------------
 
-- Clear interfaces: `Embedder`, `VectorStore`, and `DocumentParser` decouple concerns.
+- Clear interfaces: `VectorStore` and `DocumentParser` decouple concerns.
 - Storage-agnostic domain models: `Document`, `Chunk`, and `QueryHit`.
-- Adapter implementations: OpenAI embedder via LanceDB registry, LanceDB vector store, GROBID parser.
+- Adapter implementations: LanceDB vector store with built-in embedding, GROBID parser.
 - Simple pipeline: `ingest_pdf` and `query` orchestrate the workflow.
 
 Install
@@ -27,7 +27,6 @@ Quick Start (Code)
 ```python
 from vigyan import (
     Document,
-    OpenAIEmbedder,
     LanceDBVectorStore,
     GrobidParser,
     ingest_pdf,
@@ -35,33 +34,32 @@ from vigyan import (
 )
 
 # Configure components
-embedder = OpenAIEmbedder(model="text-embedding-3-small")
-store = LanceDBVectorStore(embedder=embedder)
+store = LanceDBVectorStore(embedding_model="text-embedding-3-small")
 parser = GrobidParser(server_url="http://localhost:8070")  # GROBID must be running
 
 # Ingest a PDF with automatic metadata (via GROBID)
 pdf_bytes = open("paper.pdf", "rb").read()
-ingest_pdf(pdf_bytes, meta=None, parser=parser, embedder=embedder, store=store)
+ingest_pdf(pdf_bytes, meta=None, parser=parser, store=store)
 
 # Query
 hits = query("protein folding with attention", store=store, top_k=5)
 for h in hits:
     print(h.citation, "-", h.title)
-    print(h.snippet)
+    print(h.text)
 ```
 
 CLI
 ---
 
 ```
-python -m vigyan.cli ingest --db ./vigyan_db --pdf ./paper.pdf --auto-meta
+vigyan ingest --db ./vigyan_db --pdf ./paper.pdf
 
-python -m vigyan.cli query --db ./vigyan_db --q "protein folding with attention"
+vigyan query --db ./vigyan_db --q "protein folding with attention"
 ```
 
 Notes
 -----
 
 - OpenAI-compatible key must be available in the environment for embedding.
-- GROBID must be running for parsing and (if `--auto-meta`) for metadata extraction. You can swap in a different `DocumentParser` implementation if preferred.
-- The LanceDB store fixes the vector dimension at creation time based on the `Embedder` used.
+- GROBID must be running for parsing and metadata extraction. You can swap in a different `DocumentParser` implementation if preferred.
+- The LanceDB store uses auto-embedding via the LanceDB registry, supporting OpenAI and other providers.

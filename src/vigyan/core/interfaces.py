@@ -4,21 +4,17 @@ from .models import Chunk, Document, Paragraph, QueryHit
 
 
 @runtime_checkable
-class Embedder(Protocol):
-    """Abstract embedding provider."""
+class VectorStore(Protocol):
+    """Abstract vector store with document/chunk upsert and search.
+
+    The store handles embeddings internally (auto-embedding on insert/search).
+    """
 
     @property
     def model_name(self) -> str: ...
 
     @property
     def dim(self) -> int: ...
-
-    def embed(self, texts: list[str]) -> list[list[float]]: ...
-
-
-@runtime_checkable
-class VectorStore(Protocol):
-    """Abstract vector store with document/chunk upsert and search."""
 
     def create_or_open(self) -> None: ...
 

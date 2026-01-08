@@ -4,7 +4,6 @@ import argparse
 import json
 from pathlib import Path
 
-from .embedders.openai_embedder import OpenAIEmbedder
 from .parsers.grobid import GrobidParser
 from .pipeline import ingest_pdf, query
 from .vectordb.lancedb_store import LanceDBVectorStore, default_lancedb_path
@@ -46,22 +45,19 @@ def cli(argv: list[str] | None = None) -> int:
     if args.cmd == "ingest":
         pdf_path = Path(args.pdf)
         pdf_bytes = pdf_path.read_bytes()
-        embedder = OpenAIEmbedder(model=args.embed_model)
-        store = LanceDBVectorStore(uri=args.db, embedder=embedder)
+        store = LanceDBVectorStore(uri=args.db, embedding_model=args.embed_model)
         parser_obj = GrobidParser(server_url=args.grobid)
         ret_doc = ingest_pdf(
             pdf_bytes=pdf_bytes,
             meta=None,
             parser=parser_obj,
-            embedder=embedder,
             store=store,
         )
         print("Ingested:", ret_doc.doc_id)
         return 0
 
     if args.cmd == "query":
-        embedder = OpenAIEmbedder(model=args.embed_model)
-        store = LanceDBVectorStore(uri=args.db, embedder=embedder)
+        store = LanceDBVectorStore(uri=args.db, embedding_model=args.embed_model)
         hits = query(text=args.q, store=store, top_k=args.top_k, filters=args.filter)
         print(json.dumps([h.model_dump() for h in hits], indent=2))
         return 0
