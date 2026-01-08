@@ -45,6 +45,9 @@ def ingest_pdf(
         created_at=meta.created_at or datetime.now(timezone.utc),
     )
 
+    # Initialize store to access embedding dimensions
+    store.create_or_open()
+
     # Build chunks (embeddings are computed automatically by the store)
     chunks: list[Chunk] = []
     for p in paragraphs:
@@ -76,7 +79,6 @@ def ingest_pdf(
         )
 
     # Persist
-    store.create_or_open()
     store.upsert_documents([doc])
     store.upsert_chunks(chunks)
     return doc

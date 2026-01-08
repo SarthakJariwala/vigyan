@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import unquote
 
 from cyclopts import Parameter
 
@@ -20,6 +21,9 @@ def ingest(
     embed_model: Annotated[str, Parameter(help="OpenAI embedding model")] = "text-embedding-3-small",
 ) -> None:
     """Ingest a PDF into the vector store."""
+    pdf = pdf.resolve()
+    if not pdf.exists():
+        pdf = Path(unquote(str(pdf)))
     pdf_bytes = pdf.read_bytes()
     store = LanceDBVectorStore(uri=db, embedding_model=embed_model)
     parser = GrobidParser(server_url=grobid)
