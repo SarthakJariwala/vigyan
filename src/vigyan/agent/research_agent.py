@@ -84,10 +84,11 @@ class AgentAnswer(BaseModel):
 
 
 agent: Agent[VigyanDeps, AgentAnswer] = Agent(
-    "openai:gpt-5.2",
+    "openai:gpt-5.5",
     deps_type=VigyanDeps,
     output_type=AgentAnswer,
     system_prompt=SYSTEM_PROMPT,
+    defer_model_check=True,
 )
 
 
@@ -116,6 +117,23 @@ def semantic_search(
     return pipeline_query(text=query, store=deps.store, top_k=k, filters=f)
 
 
+def build_deps(
+    *,
+    db_uri: str,
+    embed_model: str,
+    top_k: int = 8,
+    filters: str | None = None,
+) -> VigyanDeps:
+    """Create Vigyan dependencies for an agent run."""
+    store = LanceDBVectorStore(uri=db_uri, embedding_model=embed_model)
+    store.create_or_open()
+    return VigyanDeps(
+        store=store,
+        default_top_k=top_k,
+        default_filters=filters,
+    )
+
+
 def run_research_query(
     question: str,
     *,
@@ -138,13 +156,11 @@ def run_research_query(
     Returns:
         AgentAnswer with answer text and structured citations
     """
-    store = LanceDBVectorStore(uri=db_uri, embedding_model=embed_model)
-    store.create_or_open()
-
-    deps = VigyanDeps(
-        store=store,
-        default_top_k=top_k,
-        default_filters=filters,
+    deps = build_deps(
+        db_uri=db_uri,
+        embed_model=embed_model,
+        top_k=top_k,
+        filters=filters,
     )
 
     if llm_model:
