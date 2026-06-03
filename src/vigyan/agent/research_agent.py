@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from pydantic import BaseModel
@@ -14,24 +15,13 @@ SYSTEM_PROMPT = """\
 You are Vigyan, a scientific research assistant helping researchers answer
 questions based on a corpus of scientific papers indexed in a vector store.
 
-You have access to a `semantic_search` tool that returns relevant text chunks
-from papers, including:
-- `title`, `authors`, `year`, `doi`, `arxiv_id`
-- `text` (paragraph-level content)
-- `page_start`, `page_end`
-- `citation` (a human-readable citation string)
-
 Your responsibilities:
 
 1. ALWAYS base your answers on the results returned by `semantic_search`.
    - If the tool returns no relevant results, say so explicitly.
    - Do NOT fabricate papers, results, or citations.
 
-2. Use multiple `semantic_search` calls if needed:
-   - First to get an overview.
-   - Additional calls to refine or explore sub-questions.
-
-3. Citations:
+2. Citations:
    - Every specific scientific claim, numerical value, or experimental detail
      MUST be supported by at least one citation.
    - Use numbered citations like [1], [2], [3] in the answer text.
@@ -41,18 +31,11 @@ Your responsibilities:
    Example inline style:
      "The authors report an accuracy of 93% on CIFAR-10 [1, pp. 3-4]."
 
-4. Output format:
-   - In `answer`, write a clear, concise explanation in scientific prose.
-   - In `citations`, include one entry per unique source you relied on with:
-     - index (1-based, matching [n] in answer)
-     - doc_id, title, year, doi, arxiv_id, page_start, page_end
-     - snippet: a brief quote or summary of what the source supports
-
-5. Intellectual honesty:
+3. Intellectual honesty:
    - If evidence is weak, conflicting, or incomplete, state this explicitly.
    - Distinguish between what is directly supported by the text and interpretation.
 
-6. Scope:
+4. Scope:
    - Prefer direct quotes or close paraphrases for key numerical results.
    - If asked about something outside the corpus, state that limitation.
 """
@@ -83,10 +66,55 @@ class AgentAnswer(BaseModel):
     citations: list[Citation]
 
 
-agent: Agent[VigyanDeps, AgentAnswer] = Agent(
-    "openai:gpt-5.5",
+DEFAULT_EMBED_MODEL = "text-embedding-3-small"
+DEFAULT_TOP_K = 8
+
+
+def _env_value(name: str) -> str | None:
+    value = os.getenv(name)
+    return value or None
+
+
+def _env_int(name: str, default: int) -> int:
+    value = _env_value(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+
+
+def build_deps_from_env() -> VigyanDeps:
+    """Create dependencies for CLai/web runs that cannot pass deps explicitly."""
+    return build_deps(
+        db_uri=_env_value("VIGYAN_DB_URI"),
+        embed_model=(
+            _env_value("VIGYAN_EMBED_MODEL")
+            or _env_value("VIGYAN_EMBEDDING_MODEL")
+            or DEFAULT_EMBED_MODEL
+        ),
+        top_k=_env_int("VIGYAN_TOP_K", DEFAULT_TOP_K),
+        filters=_env_value("VIGYAN_FILTERS"),
+        embedding_provider=_env_value("VIGYAN_EMBED_PROVIDER") or "openai",
+        dim=(
+            _env_int("VIGYAN_EMBED_DIM", 0)
+            if _env_value("VIGYAN_EMBED_DIM") is not None
+            else None
+        ),
+        base_url=_env_value("VIGYAN_EMBED_BASE_URL"),
+        api_key_env=_env_value("VIGYAN_EMBED_API_KEY_ENV"),
+    )
+
+
+def resolve_deps(deps: VigyanDeps | None) -> VigyanDeps:
+    """Prefer explicit SDK deps; fall back to env-backed deps for CLai/web."""
+    return deps if deps is not None else build_deps_from_env()
+
+
+agent: Agent[VigyanDeps | None, AgentAnswer] = Agent(
+    "anthropic:claude-opus-4-8",
     deps_type=VigyanDeps,
-    output_type=AgentAnswer,
     system_prompt=SYSTEM_PROMPT,
     defer_model_check=True,
 )
@@ -94,7 +122,7 @@ agent: Agent[VigyanDeps, AgentAnswer] = Agent(
 
 @agent.tool
 def semantic_search(
-    ctx: RunContext[VigyanDeps],
+    ctx: RunContext[VigyanDeps | None],
     query: str,
     top_k: int | None = None,
     filters: str | None = None,
@@ -111,7 +139,7 @@ def semantic_search(
         A list of QueryHit objects with relevant chunks including page_span
         and formatted citation strings.
     """
-    deps = ctx.deps
+    deps = resolve_deps(ctx.deps)
     k = top_k or deps.default_top_k
     f = filters if filters is not None else deps.default_filters
     return pipeline_query(text=query, store=deps.store, top_k=k, filters=f)
@@ -119,13 +147,24 @@ def semantic_search(
 
 def build_deps(
     *,
-    db_uri: str,
-    embed_model: str,
-    top_k: int = 8,
+    db_uri: str | None = None,
+    embed_model: str = DEFAULT_EMBED_MODEL,
+    top_k: int = DEFAULT_TOP_K,
     filters: str | None = None,
+    embedding_provider: str = "openai",
+    dim: int | None = None,
+    base_url: str | None = None,
+    api_key_env: str | None = None,
 ) -> VigyanDeps:
     """Create Vigyan dependencies for an agent run."""
-    store = LanceDBVectorStore(uri=db_uri, embedding_model=embed_model)
+    store = LanceDBVectorStore(
+        uri=db_uri,
+        embedding_model=embed_model,
+        embedding_provider=embedding_provider,
+        dim=dim,
+        base_url=base_url,
+        api_key_env=api_key_env,
+    )
     store.create_or_open()
     return VigyanDeps(
         store=store,

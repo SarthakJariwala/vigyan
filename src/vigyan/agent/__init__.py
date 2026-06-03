@@ -1,3 +1,19 @@
-from .research_agent import AgentAnswer, Citation, run_research_query
+from .research_agent import (
+    AgentAnswer,
+    Citation,
+    VigyanDeps,
+    agent,
+    build_deps,
+    build_deps_from_env,
+    run_research_query,
+)
 
-__all__ = ["AgentAnswer", "Citation", "run_research_query"]
+__all__ = [
+    "AgentAnswer",
+    "Citation",
+    "VigyanDeps",
+    "agent",
+    "build_deps",
+    "build_deps_from_env",
+    "run_research_query",
+]

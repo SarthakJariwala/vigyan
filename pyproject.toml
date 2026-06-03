@@ -13,7 +13,7 @@ dependencies = [
     "pydantic>=2.12.0",
     "tantivy>=0.25.0",
     "platformdirs>=4.5.1",
-    "pydantic-ai-slim[openai]>=1.40.0",
+    "pydantic-ai"
 ]
 
 [build-system]
@@ -22,5 +22,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "clai>=1.40.0",
+    "clai>=1.105.0",
+    "pytest>=9.0.3",
 ]

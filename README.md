@@ -53,6 +53,25 @@ for citation in answer.citations:
     print(f"[{citation.index}] {citation.citation}")
 ```
 
+CLai Web Agent
+--------------
+
+`clai web` cannot pass Pydantic AI deps directly, so Vigyan's importable
+agent resolves vector-store deps from environment variables when explicit SDK
+deps are not provided:
+
+```bash
+export VIGYAN_DB_URI=./vigyan_db
+export VIGYAN_EMBED_MODEL=text-embedding-3-small
+# Optional:
+# export VIGYAN_TOP_K=8
+# export VIGYAN_FILTERS="year >= 2020"
+
+uv run clai web --agent src.vigyan.agent.research_agent:agent
+```
+
+The normal SDK path still uses explicit deps via `run_research_query(...)`.
+
 Notes
 -----
 
