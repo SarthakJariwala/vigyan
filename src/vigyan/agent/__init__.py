@@ -1,7 +1,7 @@
 from .research_agent import (
     AgentAnswer,
     Citation,
-    VigyanDeps,
+    ResearchAgentDeps,
     agent,
     build_deps,
     build_deps_from_env,
@@ -11,7 +11,7 @@ from .research_agent import (
 __all__ = [
     "AgentAnswer",
     "Citation",
-    "VigyanDeps",
+    "ResearchAgentDeps",
     "agent",
     "build_deps",
     "build_deps_from_env",

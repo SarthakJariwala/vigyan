@@ -6,10 +6,9 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
-from ..core.interfaces import VectorStore
-from ..core.models import QueryHit
-from ..pipeline import query as pipeline_query
-from ..vectordb.lancedb_store import LanceDBVectorStore
+from ..corpus import CorpusRetriever
+from ..models import QueryHit
+from ..vectordb import LanceDBVectorStore
 
 SYSTEM_PROMPT = """\
 You are Vigyan, a scientific research assistant helping researchers answer
@@ -42,8 +41,8 @@ Your responsibilities:
 
 
 @dataclass
-class VigyanDeps:
-    store: VectorStore
+class ResearchAgentDeps:
+    retriever: CorpusRetriever
     default_top_k: int = 8
     default_filters: str | None = None
 
@@ -85,7 +84,7 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {value!r}") from exc
 
 
-def build_deps_from_env() -> VigyanDeps:
+def build_deps_from_env() -> ResearchAgentDeps:
     """Create dependencies for CLai/web runs that cannot pass deps explicitly."""
     return build_deps(
         db_uri=_env_value("VIGYAN_DB_URI"),
@@ -107,14 +106,15 @@ def build_deps_from_env() -> VigyanDeps:
     )
 
 
-def resolve_deps(deps: VigyanDeps | None) -> VigyanDeps:
+def resolve_deps(deps: ResearchAgentDeps | None) -> ResearchAgentDeps:
     """Prefer explicit SDK deps; fall back to env-backed deps for CLai/web."""
     return deps if deps is not None else build_deps_from_env()
 
 
-agent: Agent[VigyanDeps | None, AgentAnswer] = Agent(
+agent: Agent[ResearchAgentDeps | None, AgentAnswer] = Agent(
     "anthropic:claude-opus-4-8",
-    deps_type=VigyanDeps,
+    output_type=AgentAnswer,
+    deps_type=ResearchAgentDeps,
     system_prompt=SYSTEM_PROMPT,
     defer_model_check=True,
 )
@@ -122,12 +122,12 @@ agent: Agent[VigyanDeps | None, AgentAnswer] = Agent(
 
 @agent.tool
 def semantic_search(
-    ctx: RunContext[VigyanDeps | None],
+    ctx: RunContext[ResearchAgentDeps | None],
     query: str,
     top_k: int | None = None,
     filters: str | None = None,
 ) -> list[QueryHit]:
-    """Search the scientific paper vector store for text related to the query.
+    """Search the scientific paper Corpus for text related to the query.
 
     Args:
         ctx: The run context with dependencies
@@ -142,7 +142,7 @@ def semantic_search(
     deps = resolve_deps(ctx.deps)
     k = top_k or deps.default_top_k
     f = filters if filters is not None else deps.default_filters
-    return pipeline_query(text=query, store=deps.store, top_k=k, filters=f)
+    return deps.retriever.retrieve(text=query, top_k=k, filters=f)
 
 
 def build_deps(
@@ -155,7 +155,7 @@ def build_deps(
     dim: int | None = None,
     base_url: str | None = None,
     api_key_env: str | None = None,
-) -> VigyanDeps:
+) -> ResearchAgentDeps:
     """Create Vigyan dependencies for an agent run."""
     store = LanceDBVectorStore(
         uri=db_uri,
@@ -165,9 +165,9 @@ def build_deps(
         base_url=base_url,
         api_key_env=api_key_env,
     )
-    store.create_or_open()
-    return VigyanDeps(
-        store=store,
+    retriever = CorpusRetriever(store=store)
+    return ResearchAgentDeps(
+        retriever=retriever,
         default_top_k=top_k,
         default_filters=filters,
     )
