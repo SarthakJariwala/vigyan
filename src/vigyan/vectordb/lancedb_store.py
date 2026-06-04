@@ -6,8 +6,8 @@ import platformdirs
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
 
-from ..core.interfaces import VectorStore
-from ..core.models import Chunk, Document, QueryHit
+from ..interfaces import VectorStore
+from ..models import Chunk, Document, QueryHit
 
 
 def default_lancedb_path() -> str:

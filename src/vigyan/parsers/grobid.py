@@ -3,8 +3,8 @@ from __future__ import annotations
 import httpx
 from lxml import etree  # type: ignore[import-untyped]
 
-from ..core.interfaces import DocumentParser
-from ..core.models import Document, Paragraph
+from ..interfaces import DocumentParser
+from ..models import Document, Paragraph
 
 
 class GrobidParser(DocumentParser):

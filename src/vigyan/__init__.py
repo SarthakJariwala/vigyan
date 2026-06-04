@@ -1,15 +1,5 @@
-from .core.models import Chunk, Document, Paragraph, QueryHit
-from .parsers.grobid import GrobidParser
-from .pipeline import ingest_pdf, query
-from .vectordb.lancedb_store import LanceDBVectorStore
+"""Vigyan SDK for agentic search on scientific documents with citations."""
 
-__all__ = [
-    "Document",
-    "Paragraph",
-    "Chunk",
-    "QueryHit",
-    "LanceDBVectorStore",
-    "GrobidParser",
-    "ingest_pdf",
-    "query",
-]
+__version__ = "0.0.1"
+
+__all__ = ["__version__"]
