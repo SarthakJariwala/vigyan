@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import hashlib
+from datetime import datetime, timezone
+from typing import Any
+
+from vigyan.corpus import CorpusIngestor
+from vigyan.models import Chunk, Document, Paragraph
+
+
+class FakeParser:
+    def __init__(self) -> None:
+        self.metadata_calls: list[bytes] = []
+        self.parse_calls: list[bytes] = []
+
+    def extract_metadata(self, pdf_bytes: bytes) -> Document:
+        self.metadata_calls.append(pdf_bytes)
+        return Document(
+            doc_id="doc-from-parser",
+            title="Parsed Paper",
+            authors=["Ada Lovelace", "Grace Hopper"],
+            venue="Journal of Tests",
+            year=2026,
+            doi="10.1234/parser",
+            url="https://example.test/parser",
+        )
+
+    def parse(self, pdf_bytes: bytes) -> tuple[list[Paragraph], str | None]:
+        self.parse_calls.append(pdf_bytes)
+        return (
+            [
+                Paragraph(
+                    text="First paragraph.",
+                    page_start=1,
+                    page_end=1,
+                    para_id="p1",
+                    coords="1,10,10,50,50",
+                ),
+                Paragraph(
+                    text="Second paragraph.",
+                    page_start=2,
+                    page_end=3,
+                    para_id=None,
+                    coords=None,
+                ),
+            ],
+            "<TEI />",
+        )
+
+
+class FakeStore:
+    model_name = "fake-embedding-model"
+
+    def __init__(self) -> None:
+        self.open_count = 0
+        self.documents: list[Document] = []
+        self.chunks: list[Chunk] = []
+
+    @property
+    def dim(self) -> int:
+        assert self.open_count > 0, "CorpusIngestor must open the store before reading dim"
+        return 3
+
+    def create_or_open(self) -> None:
+        self.open_count += 1
+
+    def upsert_documents(self, docs: list[Document]) -> None:
+        self.documents.extend(docs)
+
+    def upsert_chunks(self, chunks: list[Chunk]) -> None:
+        self.chunks.extend(chunks)
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 8,
+        filters: str | None = None,
+    ) -> list[Any]:
+        raise AssertionError("Corpus ingestion must not search")
+
+
+def test_ingest_pdf_extracts_metadata_opens_store_builds_chunks_and_persists() -> None:
+    parser = FakeParser()
+    store = FakeStore()
+    ingestor = CorpusIngestor(parser=parser, store=store)
+
+    doc = ingestor.ingest_pdf(b"pdf bytes", meta=None, source_url="https://source.test/paper.pdf")
+
+    assert parser.metadata_calls == [b"pdf bytes"]
+    assert parser.parse_calls == [b"pdf bytes"]
+    assert store.open_count == 1
+    assert store.documents == [doc]
+    assert doc.doc_id == "doc-from-parser"
+    assert doc.pdf_sha256 == hashlib.sha256(b"pdf bytes").hexdigest()
+    assert doc.n_pages == 3
+    assert doc.tei_xml is None
+
+    assert len(store.chunks) == 2
+    first, second = store.chunks
+    assert first.doc_id == doc.doc_id
+    assert first.text == "First paragraph."
+    assert first.page_start == 1
+    assert first.page_end == 1
+    assert first.para_ids == ["p1"]
+    assert first.coords == ["1,10,10,50,50"]
+    assert first.title == "Parsed Paper"
+    assert first.authors == ["Ada Lovelace", "Grace Hopper"]
+    assert first.source_url == "https://source.test/paper.pdf"
+    assert first.embedding_model == "fake-embedding-model"
+    assert first.embedding_dims == 3
+    assert first.embedding_ts.tzinfo is not None
+    assert first.parser == "FakeParser"
+
+    assert second.para_ids == []
+    assert second.coords == []
+    assert second.page_start == 2
+    assert second.page_end == 3
+
+
+def test_ingest_pdf_uses_explicit_metadata_without_extracting_metadata() -> None:
+    parser = FakeParser()
+    store = FakeStore()
+    ingestor = CorpusIngestor(parser=parser, store=store)
+    created_at = datetime(2025, 1, 2, tzinfo=timezone.utc)
+    meta = Document(
+        doc_id="explicit-doc",
+        title="Explicit Paper",
+        authors=["Test Author"],
+        created_at=created_at,
+        url="https://example.test/meta",
+    )
+
+    doc = ingestor.ingest_pdf(b"pdf bytes", meta=meta, source_url=None)
+
+    assert parser.metadata_calls == []
+    assert parser.parse_calls == [b"pdf bytes"]
+    assert doc.doc_id == "explicit-doc"
+    assert doc.title == "Explicit Paper"
+    assert doc.created_at == created_at
+    assert store.chunks[0].source_url == "https://example.test/meta"
