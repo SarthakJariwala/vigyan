@@ -37,9 +37,11 @@ class GrobidParser(DocumentParser):
     def _grobid_fulltext_xml(self, pdf_bytes: bytes) -> str:
         # Use list-of-tuples for files to avoid any ambiguity
         files = [("input", ("doc.pdf", pdf_bytes, "application/pdf"))]
-        # Use a single, comma-separated teiCoordinates value
+        # GROBID expects teiCoordinates as repeated/list form fields. A single
+        # comma-separated value is treated as an unknown coordinate target and
+        # paragraph coords are omitted, forcing page-number fallback to page 1.
         data = {
-            "teiCoordinates": "p,s,head,ref",
+            "teiCoordinates": ["p", "s", "head", "ref"],
             "segmentSentences": "1",
         }
         r = httpx.post(
