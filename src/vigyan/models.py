@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -21,13 +22,17 @@ class Document(BaseModel):
 
 
 class Paragraph(BaseModel):
-    """A parsed paragraph with citation-relevant metadata."""
+    """A parsed text/table block with citation-relevant metadata."""
 
     text: str
     page_start: int
     page_end: int
     para_id: str | None = None
     coords: str | None = None
+    section_path: list[str] = Field(default_factory=list)
+    block_type: Literal["paragraph", "table"] = "paragraph"
+    caption: str | None = None
+    cells: list[list[str]] | None = None
 
 
 class Chunk(BaseModel):
@@ -42,11 +47,13 @@ class Chunk(BaseModel):
     text: str
     page_start: int
     page_end: int
-    para_ids: list[str] = []
-    section_path: list[str] = []
+    para_ids: list[str] = Field(default_factory=list)
+    section_path: list[str] = Field(default_factory=list)
     char_start: int | None = None
     char_end: int | None = None
-    coords: list[str] = []
+    coords: list[str] = Field(default_factory=list)
+    chunk_type: str = "paragraph"
+    caption: str | None = None
     title: str
     authors: list[str]
     venue: str | None = None
@@ -69,6 +76,9 @@ class QueryHit(BaseModel):
     doi: str | None
     arxiv_id: str | None
     page_span: tuple[int, int]
+    section_path: list[str] = Field(default_factory=list)
+    chunk_type: str = "paragraph"
+    caption: str | None = None
     text: str
     citation: str
     distance: float | None = None

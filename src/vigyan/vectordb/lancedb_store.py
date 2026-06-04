@@ -46,6 +46,8 @@ def make_chunk_record_model(embedding_fn):
         char_start: int | None = None
         char_end: int | None = None
         coords: list[str] = []
+        chunk_type: str = "paragraph"
+        caption: str | None = None
         # Denormalized doc fields for fast filters & citations
         title: str
         authors: list[str]
@@ -185,6 +187,8 @@ class LanceDBVectorStore(VectorStore):
                     "para_ids",
                     "section_path",
                     "coords",
+                    "chunk_type",
+                    "caption",
                 ]
             )
             .to_list()
@@ -215,6 +219,9 @@ class LanceDBVectorStore(VectorStore):
             doi=h.get("doi"),
             arxiv_id=h.get("arxiv_id"),
             page_span=(h["page_start"], h["page_end"]),
+            section_path=h.get("section_path") or [],
+            chunk_type=h.get("chunk_type") or "paragraph",
+            caption=h.get("caption"),
             text=h["text"],
             citation=cite,
             distance=h.get("_distance"),

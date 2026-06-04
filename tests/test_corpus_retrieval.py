@@ -4,6 +4,7 @@ from typing import Any
 
 from vigyan.corpus import CorpusRetriever
 from vigyan.models import Chunk, Document, QueryHit
+from vigyan.vectordb.lancedb_store import LanceDBVectorStore
 
 
 class FakeStore:
@@ -64,3 +65,28 @@ def test_retrieve_opens_store_and_delegates_to_vector_store_search() -> None:
     assert store.search_calls == [
         {"query": "protein folding", "top_k": 4, "filters": "year >= 2020"}
     ]
+
+
+def test_lancedb_format_hit_preserves_chunk_type_section_path_and_caption() -> None:
+    hit = LanceDBVectorStore._format_hit(
+        {
+            "_distance": 0.2,
+            "doc_id": "doc-1",
+            "text": "[TABLE]\nCaption: Table 1 Device metrics.",
+            "title": "A Test Paper",
+            "authors": ["Tester A", "Tester B"],
+            "year": 2026,
+            "doi": "10.1234/example",
+            "arxiv_id": None,
+            "page_start": 5,
+            "page_end": 5,
+            "section_path": ["Results", "Device performance"],
+            "chunk_type": "table",
+            "caption": "Table 1 Device metrics.",
+        }
+    )
+
+    assert hit.chunk_type == "table"
+    assert hit.section_path == ["Results", "Device performance"]
+    assert hit.caption == "Table 1 Device metrics."
+    assert hit.citation == "Tester A et al. A Test Paper (2026), p. 5"

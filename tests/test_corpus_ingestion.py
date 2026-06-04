@@ -138,3 +138,108 @@ def test_ingest_pdf_uses_explicit_metadata_without_extracting_metadata() -> None
     assert doc.title == "Explicit Paper"
     assert doc.created_at == created_at
     assert store.chunks[0].source_url == "https://example.test/meta"
+
+
+def test_ingest_pdf_merges_short_adjacent_paragraphs_and_keeps_tables_standalone() -> None:
+    class Parser(FakeParser):
+        def parse(self, pdf_bytes: bytes) -> tuple[list[Paragraph], str | None]:
+            self.parse_calls.append(pdf_bytes)
+            return (
+                [
+                    Paragraph(
+                        text="Short result one.",
+                        page_start=2,
+                        page_end=2,
+                        para_id="p1",
+                        coords="2,10,10,50,50",
+                        section_path=["Results"],
+                    ),
+                    Paragraph(
+                        text="Short result two.",
+                        page_start=2,
+                        page_end=2,
+                        para_id="p2",
+                        coords="2,20,10,50,50",
+                        section_path=["Results"],
+                    ),
+                    Paragraph(
+                        text="[TABLE]\nCaption: Table 1 Device metrics.\n| Metric | Value |\n| --- | --- |\n| PCE | 25.1% |",
+                        page_start=2,
+                        page_end=2,
+                        para_id="tab_1",
+                        coords="2,30,10,50,50",
+                        section_path=["Results"],
+                        block_type="table",
+                        caption="Table 1 Device metrics.",
+                        cells=[["Metric", "Value"], ["PCE", "25.1%"]],
+                    ),
+                    Paragraph(
+                        text="Short result after table.",
+                        page_start=2,
+                        page_end=2,
+                        para_id="p3",
+                        coords="2,40,10,50,50",
+                        section_path=["Results"],
+                    ),
+                ],
+                "<TEI />",
+            )
+
+    parser = Parser()
+    store = FakeStore()
+    ingestor = CorpusIngestor(parser=parser, store=store)
+
+    ingestor.ingest_pdf(b"pdf bytes", meta=None, source_url=None)
+
+    assert len(store.chunks) == 3
+    merged, table, after_table = store.chunks
+    assert merged.text == "Short result one.\n\nShort result two."
+    assert merged.para_ids == ["p1", "p2"]
+    assert merged.coords == ["2,10,10,50,50", "2,20,10,50,50"]
+    assert merged.section_path == ["Results"]
+    assert merged.chunk_type == "paragraph"
+
+    assert table.text.startswith("[TABLE]\nCaption: Table 1 Device metrics.")
+    assert table.para_ids == ["tab_1"]
+    assert table.section_path == ["Results"]
+    assert table.chunk_type == "table"
+    assert table.caption == "Table 1 Device metrics."
+
+    assert after_table.text == "Short result after table."
+    assert after_table.para_ids == ["p3"]
+    assert after_table.chunk_type == "paragraph"
+
+
+def test_ingest_pdf_splits_very_long_paragraphs_by_sentence() -> None:
+    class Parser(FakeParser):
+        def parse(self, pdf_bytes: bytes) -> tuple[list[Paragraph], str | None]:
+            self.parse_calls.append(pdf_bytes)
+            long_text = f"{'A' * 900}. {'B' * 900}."
+            return (
+                [
+                    Paragraph(
+                        text=long_text,
+                        page_start=4,
+                        page_end=4,
+                        para_id="p-long",
+                        coords="4,10,10,50,50",
+                        section_path=["Discussion"],
+                    )
+                ],
+                "<TEI />",
+            )
+
+    parser = Parser()
+    store = FakeStore()
+    ingestor = CorpusIngestor(parser=parser, store=store)
+
+    ingestor.ingest_pdf(b"pdf bytes", meta=None, source_url=None)
+
+    assert len(store.chunks) == 2
+    first, second = store.chunks
+    assert first.text == f"{'A' * 900}."
+    assert second.text == f"{'B' * 900}."
+    assert first.para_ids == ["p-long"]
+    assert second.para_ids == ["p-long"]
+    assert first.page_start == second.page_start == 4
+    assert first.section_path == second.section_path == ["Discussion"]
