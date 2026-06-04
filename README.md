@@ -10,9 +10,9 @@ Design Principles
 -----------------
 
 - Clear interfaces: `VectorStore` and `DocumentParser` decouple concerns.
-- Storage-agnostic domain models: `Document`, `Chunk`, and `QueryHit`.
+- Storage-agnostic domain models from `vigyan.models`: `Document`, `Chunk`, and `QueryHit`.
 - Adapter implementations: LanceDB vector store with built-in embedding, GROBID parser.
-- Simple SDK pipeline: `ingest_pdf`, `query`, and `run_research_query` orchestrate the workflow.
+- Domain-named Corpus modules: `CorpusIngestor`, `CorpusRetriever`, and `run_research_query` orchestrate ingestion, retrieval, and cited answers.
 
 Install
 -------
@@ -25,19 +25,23 @@ Quick Start
 -----------
 
 ```python
-from vigyan import LanceDBVectorStore, GrobidParser, ingest_pdf, query
+from vigyan.corpus import CorpusIngestor, CorpusRetriever
+from vigyan.parsers import GrobidParser
+from vigyan.vectordb import LanceDBVectorStore
 from vigyan.agent import run_research_query
 
-# Configure components
+# Configure adapters
 store = LanceDBVectorStore(embedding_model="text-embedding-3-small")
 parser = GrobidParser(server_url="http://localhost:8070")  # GROBID must be running
 
-# Ingest a PDF with automatic metadata (via GROBID)
+# Ingest a PDF with automatic metadata via GROBID
 pdf_bytes = open("paper.pdf", "rb").read()
-ingest_pdf(pdf_bytes, meta=None, parser=parser, store=store)
+ingestor = CorpusIngestor(parser=parser, store=store)
+ingestor.ingest_pdf(pdf_bytes, meta=None)
 
 # Retrieve relevant passages directly
-hits = query("protein folding with attention", store=store, top_k=5)
+retriever = CorpusRetriever(store=store)
+hits = retriever.retrieve("protein folding with attention", top_k=5)
 for h in hits:
     print(h.citation, "-", h.title)
     print(h.text)
