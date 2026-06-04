@@ -1,6 +1,4 @@
 from .research_agent import (
-    AgentAnswer,
-    Citation,
     ResearchAgentDeps,
     agent,
     build_deps,
@@ -9,8 +7,6 @@ from .research_agent import (
 )
 
 __all__ = [
-    "AgentAnswer",
-    "Citation",
     "ResearchAgentDeps",
     "agent",
     "build_deps",

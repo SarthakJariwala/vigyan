@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
 from ..corpus import CorpusRetriever
@@ -45,24 +44,6 @@ class ResearchAgentDeps:
     retriever: CorpusRetriever
     default_top_k: int = 8
     default_filters: str | None = None
-
-
-class Citation(BaseModel):
-    index: int
-    doc_id: str
-    title: str
-    year: int | None = None
-    doi: str | None = None
-    arxiv_id: str | None = None
-    page_start: int
-    page_end: int
-    snippet: str
-    citation: str
-
-
-class AgentAnswer(BaseModel):
-    answer: str
-    citations: list[Citation]
 
 
 DEFAULT_EMBED_MODEL = "text-embedding-3-small"
@@ -111,9 +92,8 @@ def resolve_deps(deps: ResearchAgentDeps | None) -> ResearchAgentDeps:
     return deps if deps is not None else build_deps_from_env()
 
 
-agent: Agent[ResearchAgentDeps | None, AgentAnswer] = Agent(
+agent: Agent[ResearchAgentDeps | None] = Agent(
     "anthropic:claude-opus-4-8",
-    output_type=AgentAnswer,
     deps_type=ResearchAgentDeps,
     system_prompt=SYSTEM_PROMPT,
     defer_model_check=True,
@@ -181,7 +161,7 @@ def run_research_query(
     top_k: int = 8,
     filters: str | None = None,
     llm_model: str | None = None,
-) -> AgentAnswer:
+) -> str:
     """Run the Vigyan research agent to answer a scientific question.
 
     Args:
@@ -193,7 +173,7 @@ def run_research_query(
         llm_model: Optional LLM model override
 
     Returns:
-        AgentAnswer with answer text and structured citations
+        str with answer text and citations
     """
     deps = build_deps(
         db_uri=db_uri,
