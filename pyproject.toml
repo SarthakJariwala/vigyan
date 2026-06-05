@@ -1,6 +1,6 @@
 [project]
 name = "vigyan"
-version = "0.0.1"
+version = "0.1.0"
 description = "High accuracy agentic search on scientific documents with citations"
 readme = "README.md"
 requires-python = ">=3.12"
