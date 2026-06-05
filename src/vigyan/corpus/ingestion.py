@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ..interfaces import DocumentParser, VectorStore
-from ..models import Chunk, Document, Paragraph
+from ..models import Chunk, Document, DocumentReference, Paragraph
 
 
 MAX_CHUNK_CHARS = 1600
@@ -35,7 +35,7 @@ class CorpusIngestor:
         if meta is None:
             meta = self.parser.extract_metadata(pdf_bytes)
 
-        paragraphs, _ = self.parser.parse(pdf_bytes)
+        paragraphs, tei_xml = self.parser.parse(pdf_bytes)
         pdf_sha = _hash_pdf(pdf_bytes)
 
         base = meta.model_dump(
@@ -53,10 +53,24 @@ class CorpusIngestor:
         self.store.create_or_open()
 
         chunks = self._build_chunks(doc, paragraphs, source_url)
+        references = self._parse_references(doc, tei_xml)
 
         self.store.upsert_documents([doc])
+        self.store.upsert_references(references)
         self.store.upsert_chunks(chunks)
         return doc
+
+    def _parse_references(
+        self,
+        doc: Document,
+        tei_xml: str | None,
+    ) -> list[DocumentReference]:
+        if not tei_xml:
+            return []
+        parse_references = getattr(self.parser, "parse_references", None)
+        if parse_references is None:
+            return []
+        return parse_references(tei_xml, source_doc_id=doc.doc_id)
 
     def _build_chunks(
         self,
@@ -119,6 +133,7 @@ class CorpusIngestor:
         )
         para_ids = [block.para_id for block in blocks if block.para_id]
         coords = [block.coords for block in blocks if block.coords]
+        cited_ref_ids = _unique_ref_ids(blocks)
         return Chunk(
             chunk_id=str(uuid.uuid4()),
             doc_id=doc.doc_id,
@@ -130,6 +145,7 @@ class CorpusIngestor:
             char_start=None,
             char_end=None,
             coords=coords,
+            cited_ref_ids=cited_ref_ids,
             chunk_type=first.block_type,
             caption=first.caption if first.block_type == "table" else None,
             title=doc.title,
@@ -144,6 +160,15 @@ class CorpusIngestor:
             embedding_ts=datetime.now(timezone.utc),
             parser=type(self.parser).__name__,
         )
+
+
+def _unique_ref_ids(blocks: list[Paragraph]) -> list[str]:
+    ref_ids: list[str] = []
+    for block in blocks:
+        for ref_id in block.cited_ref_ids:
+            if ref_id not in ref_ids:
+                ref_ids.append(ref_id)
+    return ref_ids
 
 
 def _joined_text_len(blocks: list[Paragraph]) -> int:

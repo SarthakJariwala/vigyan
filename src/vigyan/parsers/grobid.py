@@ -6,7 +6,7 @@ import httpx
 from lxml import etree  # type: ignore[import-untyped]
 
 from ..interfaces import DocumentParser
-from ..models import Document, Paragraph
+from ..models import Document, DocumentReference, Paragraph
 
 
 class GrobidParser(DocumentParser):
@@ -97,6 +97,7 @@ class GrobidParser(DocumentParser):
                     para_id=xml_id,
                     coords=coords,
                     section_path=GrobidParser._section_path_for_node(node, ns),
+                    cited_ref_ids=GrobidParser._cited_ref_ids_for_node(node, ns),
                 )
             )
         return out
@@ -141,15 +142,125 @@ class GrobidParser(DocumentParser):
             para_id=xml_id,
             coords=coords,
             section_path=GrobidParser._section_path_for_node(figure, ns),
+            cited_ref_ids=GrobidParser._cited_ref_ids_for_node(figure, ns),
             block_type="table",
             caption=caption,
             cells=cells or None,
         )
 
     @staticmethod
+    def parse_references(
+        tei_xml: str,
+        source_doc_id: str,
+    ) -> list[DocumentReference]:
+        """Extract bibliography entries from GROBID TEI."""
+        root = etree.fromstring(tei_xml.encode("utf-8"))
+        ns = {"tei": "http://www.tei-c.org/ns/1.0"}
+        references: list[DocumentReference] = []
+        for bibl in root.xpath("//tei:listBibl//tei:biblStruct", namespaces=ns):
+            ref_id = bibl.get("{http://www.w3.org/XML/1998/namespace}id")
+            if not ref_id:
+                continue
+            label = GrobidParser._first_text(bibl, "./tei:label/text()", ns)
+            title = (
+                GrobidParser._first_text(bibl, ".//tei:analytic/tei:title/text()", ns)
+                or GrobidParser._first_text(bibl, ".//tei:monogr/tei:title/text()", ns)
+            )
+            venue = GrobidParser._first_text(
+                bibl,
+                ".//tei:monogr/tei:title[@level='j' or @level='m']/text()",
+                ns,
+            )
+            doi = GrobidParser._clean_doi(
+                GrobidParser._first_text(bibl, ".//tei:idno[@type='DOI']/text()", ns)
+            )
+            url = (
+                GrobidParser._first_text(bibl, ".//tei:idno[@type='URL']/text()", ns)
+                or GrobidParser._first_text(bibl, ".//tei:ptr/@target", ns)
+            )
+            year = GrobidParser._year_from_bibl(bibl, ns)
+            references.append(
+                DocumentReference(
+                    reference_id=f"{source_doc_id}:{ref_id}",
+                    source_doc_id=source_doc_id,
+                    ref_id=ref_id,
+                    label=label,
+                    title=title or None,
+                    authors=GrobidParser._authors_from_bibl(bibl, ns),
+                    venue=venue,
+                    year=year,
+                    doi=doi,
+                    url=url,
+                    raw_text=GrobidParser._node_text(bibl),
+                )
+            )
+        return references
+
+    @staticmethod
+    def _clean_doi(doi: str | None) -> str | None:
+        if not doi:
+            return None
+        value = doi.strip()
+        for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
+            if value.lower().startswith(prefix):
+                value = value[len(prefix) :]
+        value = value.split("?", 1)[0].strip()
+        return value or None
+
+    @staticmethod
     def _node_text(node: etree._Element) -> str:
         raw = "".join(node.itertext())
         return re.sub(r"\s+", " ", raw).strip()
+
+    @staticmethod
+    def _cited_ref_ids_for_node(node: etree._Element, ns: dict[str, str]) -> list[str]:
+        ref_ids: list[str] = []
+        for target in node.xpath(".//tei:ref[@type='bibr']/@target", namespaces=ns):
+            for part in str(target).split():
+                ref_id = part.lstrip("#").strip()
+                if ref_id and ref_id not in ref_ids:
+                    ref_ids.append(ref_id)
+        return ref_ids
+
+    @staticmethod
+    def _first_text(node: etree._Element, xpath: str, ns: dict[str, str]) -> str | None:
+        values = node.xpath(xpath, namespaces=ns)
+        if not values:
+            return None
+        value = str(values[0]).strip()
+        return value or None
+
+    @staticmethod
+    def _year_from_bibl(node: etree._Element, ns: dict[str, str]) -> int | None:
+        when = GrobidParser._first_text(node, ".//tei:date/@when", ns)
+        if when and len(when) >= 4 and when[:4].isdigit():
+            return int(when[:4])
+        date_text = GrobidParser._first_text(node, ".//tei:date/text()", ns)
+        if date_text:
+            match = re.search(r"\b(19|20)\d{2}\b", date_text)
+            if match:
+                return int(match.group(0))
+        return None
+
+    @staticmethod
+    def _authors_from_bibl(node: etree._Element, ns: dict[str, str]) -> list[str]:
+        authors: list[str] = []
+        author_nodes = node.xpath(".//tei:analytic/tei:author/tei:persName", namespaces=ns)
+        if not author_nodes:
+            author_nodes = node.xpath(".//tei:monogr/tei:author/tei:persName", namespaces=ns)
+        for pers_name in author_nodes:
+            forename = " ".join(
+                t.strip()
+                for t in pers_name.xpath("tei:forename/text()", namespaces=ns)
+                if t.strip()
+            )
+            surname = GrobidParser._first_text(pers_name, "tei:surname/text()", ns) or ""
+            name = f"{forename} {surname}".strip()
+            if not name:
+                name = GrobidParser._node_text(pers_name)
+            if name:
+                authors.append(name)
+        return authors
 
     @staticmethod
     def _coords_for_node(node: etree._Element) -> str | None:

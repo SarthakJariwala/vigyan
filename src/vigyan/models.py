@@ -30,9 +30,41 @@ class Paragraph(BaseModel):
     para_id: str | None = None
     coords: str | None = None
     section_path: list[str] = Field(default_factory=list)
+    cited_ref_ids: list[str] = Field(default_factory=list)
     block_type: Literal["paragraph", "table"] = "paragraph"
     caption: str | None = None
     cells: list[list[str]] | None = None
+
+
+class DocumentReference(BaseModel):
+    """Bibliography entry cited by a source document."""
+
+    reference_id: str
+    source_doc_id: str
+    ref_id: str
+    label: str | None = None
+    title: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    venue: str | None = None
+    year: int | None = None
+    doi: str | None = None
+    url: str | None = None
+    raw_text: str = ""
+    in_corpus: bool = False
+    resolved_doc_id: str | None = None
+
+
+class CitedReference(BaseModel):
+    """Compact bibliography entry exposed on retrieval hits."""
+
+    ref_id: str
+    title: str | None = None
+    authors: str | None = None
+    doi: str | None = None
+    year: int | None = None
+    journal: str | None = None
+    in_corpus: bool = False
+    resolved_doc_id: str | None = None
 
 
 class Chunk(BaseModel):
@@ -52,6 +84,7 @@ class Chunk(BaseModel):
     char_start: int | None = None
     char_end: int | None = None
     coords: list[str] = Field(default_factory=list)
+    cited_ref_ids: list[str] = Field(default_factory=list)
     chunk_type: str = "paragraph"
     caption: str | None = None
     title: str
@@ -79,6 +112,8 @@ class QueryHit(BaseModel):
     section_path: list[str] = Field(default_factory=list)
     chunk_type: str = "paragraph"
     caption: str | None = None
+    cited_ref_ids: list[str] = Field(default_factory=list)
+    cited_references: list[CitedReference] = Field(default_factory=list)
     text: str
     citation: str
     distance: float | None = None

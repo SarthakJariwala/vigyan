@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from vigyan.corpus import CorpusIngestor
-from vigyan.models import Chunk, Document, Paragraph
+from vigyan.models import Chunk, Document, DocumentReference, Paragraph
 
 
 class FakeParser:
@@ -55,6 +55,7 @@ class FakeStore:
         self.open_count = 0
         self.documents: list[Document] = []
         self.chunks: list[Chunk] = []
+        self.references: list[DocumentReference] = []
 
     @property
     def dim(self) -> int:
@@ -69,6 +70,9 @@ class FakeStore:
 
     def upsert_chunks(self, chunks: list[Chunk]) -> None:
         self.chunks.extend(chunks)
+
+    def upsert_references(self, references: list[DocumentReference]) -> None:
+        self.references.extend(references)
 
     def search(
         self,
@@ -103,6 +107,7 @@ def test_ingest_pdf_extracts_metadata_opens_store_builds_chunks_and_persists() -
     assert first.page_end == 1
     assert first.para_ids == ["p1"]
     assert first.coords == ["1,10,10,50,50"]
+    assert first.cited_ref_ids == []
     assert first.title == "Parsed Paper"
     assert first.authors == ["Ada Lovelace", "Grace Hopper"]
     assert first.source_url == "https://source.test/paper.pdf"
@@ -115,6 +120,7 @@ def test_ingest_pdf_extracts_metadata_opens_store_builds_chunks_and_persists() -
     assert second.coords == []
     assert second.page_start == 2
     assert second.page_end == 3
+    assert store.references == []
 
 
 def test_ingest_pdf_uses_explicit_metadata_without_extracting_metadata() -> None:
@@ -138,6 +144,63 @@ def test_ingest_pdf_uses_explicit_metadata_without_extracting_metadata() -> None
     assert doc.title == "Explicit Paper"
     assert doc.created_at == created_at
     assert store.chunks[0].source_url == "https://example.test/meta"
+
+
+def test_ingest_pdf_persists_bibliography_references_and_chunk_citation_links() -> None:
+    class Parser(FakeParser):
+        def parse(self, pdf_bytes: bytes) -> tuple[list[Paragraph], str | None]:
+            self.parse_calls.append(pdf_bytes)
+            return (
+                [
+                    Paragraph(
+                        text="External record claim [11].",
+                        page_start=2,
+                        page_end=2,
+                        para_id="p1",
+                        coords="2,10,10,50,50",
+                        cited_ref_ids=["b10"],
+                    )
+                ],
+                "<TEI />",
+            )
+
+        def parse_references(
+            self,
+            tei_xml: str,
+            source_doc_id: str,
+        ) -> list[DocumentReference]:
+            return [
+                DocumentReference(
+                    reference_id=f"{source_doc_id}:b10",
+                    source_doc_id=source_doc_id,
+                    ref_id="b10",
+                    title="Record tandem solar cells",
+                    authors=["Sara Record"],
+                    year=2025,
+                    doi="10.1234/record",
+                    raw_text="Sara Record, Record tandem solar cells",
+                )
+            ]
+
+    parser = Parser()
+    store = FakeStore()
+    ingestor = CorpusIngestor(parser=parser, store=store)
+
+    doc = ingestor.ingest_pdf(b"pdf bytes", meta=None, source_url=None)
+
+    assert store.references == [
+        DocumentReference(
+            reference_id=f"{doc.doc_id}:b10",
+            source_doc_id=doc.doc_id,
+            ref_id="b10",
+            title="Record tandem solar cells",
+            authors=["Sara Record"],
+            year=2025,
+            doi="10.1234/record",
+            raw_text="Sara Record, Record tandem solar cells",
+        )
+    ]
+    assert store.chunks[0].cited_ref_ids == ["b10"]
 
 
 def test_ingest_pdf_merges_short_adjacent_paragraphs_and_keeps_tables_standalone() -> None:

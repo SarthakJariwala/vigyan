@@ -1,6 +1,6 @@
 from typing import Protocol, runtime_checkable
 
-from .models import Chunk, Document, Paragraph, QueryHit
+from .models import Chunk, Document, DocumentReference, Paragraph, QueryHit
 
 
 @runtime_checkable
@@ -18,6 +18,8 @@ class VectorStore(Protocol):
     def upsert_documents(self, docs: list[Document]) -> None: ...
 
     def upsert_chunks(self, chunks: list[Chunk]) -> None: ...
+
+    def upsert_references(self, references: list[DocumentReference]) -> None: ...
 
     def search(
         self, query: str, top_k: int = 8, filters: str | None = None
