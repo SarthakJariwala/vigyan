@@ -9,4 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
+# Verification runtime state and retained local evidence
+.pi/verification/
+
 .DS_Store
