@@ -1,0 +1,604 @@
+#!/usr/bin/env python3
+"""Run Vigyan verification in an isolated local environment."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import tomllib
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[4]
+BASE = ROOT / ".pi" / "verification" / "vigyan"
+STATE_BASE = BASE / ".state"
+RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
+EXPECTED_MODEL = "anthropic:claude-opus-4-8"
+MARKER_PREFIX = "vigyan-verification-ui"
+
+
+def validate_run_id(value: str) -> str:
+    if not RUN_ID_RE.fullmatch(value):
+        raise SystemExit(
+            "RUN_ID must start with an alphanumeric character and contain only "
+            "letters, numbers, dots, underscores, or hyphens"
+        )
+    return value
+
+
+def state_dir(run_id: str) -> Path:
+    return STATE_BASE / validate_run_id(run_id)
+
+
+def evidence_dir(run_id: str) -> Path:
+    return BASE / validate_run_id(run_id)
+
+
+def metadata_path(run_id: str) -> Path:
+    return state_dir(run_id) / "run.json"
+
+
+def load_metadata(run_id: str) -> dict[str, Any]:
+    path = metadata_path(run_id)
+    if not path.exists():
+        raise SystemExit(f"Run {run_id!r} is not launched. Run launch first.")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_metadata(run_id: str, metadata: dict[str, Any]) -> None:
+    path = metadata_path(run_id)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def project_version() -> str:
+    with (ROOT / "pyproject.toml").open("rb") as file:
+        return str(tomllib.load(file)["project"]["version"])
+
+
+def git_revision() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def git_status() -> str:
+    result = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.rstrip()
+
+
+def run_env(
+    run_id: str, allow_provider_credentials: bool | None = None
+) -> dict[str, str]:
+    state = state_dir(run_id)
+    home = state / "home"
+    env = {name: value for name, value in os.environ.items() if not name.startswith("VIGYAN_")}
+    if allow_provider_credentials is None:
+        path = metadata_path(run_id)
+        allow_provider_credentials = (
+            bool(json.loads(path.read_text(encoding="utf-8")).get("allow_provider_credentials"))
+            if path.exists()
+            else False
+        )
+    env.update(
+        {
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(home / "config"),
+            "XDG_DATA_HOME": str(home / "data"),
+            "XDG_CACHE_HOME": str(home / "cache"),
+            "XDG_STATE_HOME": str(home / "state"),
+            "VIGYAN_DB_URI": str(state / "corpus.lance"),
+            "VIGYAN_VERIFY_RUN_ID": run_id,
+            "NO_COLOR": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "UV_NO_PROGRESS": "1",
+        }
+    )
+    if not allow_provider_credentials:
+        # CLai resolves the configured provider while building /api/configure,
+        # even though launch never submits a model request.
+        env["ANTHROPIC_API_KEY"] = "verify-vigyan-placeholder"
+        env.pop("OPENAI_API_KEY", None)
+    env.pop("FORCE_COLOR", None)
+    return env
+
+
+def unused_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def request_url(port: int, path: str, timeout: float = 3.0) -> tuple[int, bytes, str]:
+    if not path.startswith("/"):
+        raise ValueError("request path must start with /")
+    url = f"http://127.0.0.1:{port}{path}"
+    request = urllib.request.Request(url, headers={"User-Agent": "verify-vigyan/1"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return int(response.status), response.read(), response.headers.get_content_type()
+    except urllib.error.HTTPError as exc:
+        return int(exc.code), exc.read(), exc.headers.get_content_type()
+
+
+def marker(run_id: str) -> str:
+    return f"{MARKER_PREFIX}-{run_id}"
+
+
+def configure_model(config: bytes) -> str | None:
+    data = json.loads(config)
+    if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+        return None
+    for model in data["models"]:
+        if isinstance(model, dict) and model.get("id") == EXPECTED_MODEL:
+            return EXPECTED_MODEL
+    return None
+
+
+def wait_until_ready(
+    run_id: str, port: int, timeout: float, process: subprocess.Popen[bytes]
+) -> tuple[bytes, bytes]:
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        exit_code = process.poll()
+        if exit_code is not None:
+            raise RuntimeError(f"CLai web exited before readiness with code {exit_code}")
+        try:
+            status, health, _ = request_url(port, "/api/health", timeout=1.0)
+            if status == 200 and json.loads(health) == {"ok": True}:
+                root_status, root, _ = request_url(port, "/", timeout=1.0)
+                if root_status == 200 and marker(run_id).encode() in root:
+                    return health, root
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            last_error = exc
+        time.sleep(0.2)
+    detail = f": {last_error}" if last_error else ""
+    raise RuntimeError(f"CLai web did not become ready within {timeout:g}s{detail}")
+
+
+def package_versions(run_id: str) -> dict[str, str]:
+    script = (
+        "import json; from importlib.metadata import version; "
+        "print(json.dumps({n: version(n) for n in "
+        "['vigyan', 'clai', 'pydantic-ai', 'pytest']}))"
+    )
+    result = subprocess.run(
+        ["uv", "run", "--no-sync", "python", "-c", script],
+        cwd=ROOT,
+        env=run_env(run_id),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def process_has_marker(pid: int, run_id: str) -> bool:
+    environ = Path(f"/proc/{pid}/environ")
+    try:
+        values = environ.read_bytes().split(b"\0")
+    except FileNotFoundError:
+        return False
+    except PermissionError:
+        raise RuntimeError(f"cannot inspect process {pid} before signaling it") from None
+    return f"VIGYAN_VERIFY_RUN_ID={run_id}".encode() in values
+
+
+def process_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop_server(run_id: str, metadata: dict[str, Any]) -> str:
+    pid_value = metadata.get("pid")
+    if not isinstance(pid_value, int) or not process_is_alive(pid_value):
+        return "server already stopped"
+    if not process_has_marker(pid_value, run_id):
+        raise RuntimeError(
+            f"refusing to signal PID {pid_value}: verification marker does not match"
+        )
+
+    try:
+        process_group = os.getpgid(pid_value)
+    except ProcessLookupError:
+        return "server already stopped"
+    os.killpg(process_group, signal.SIGTERM)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not process_is_alive(pid_value):
+            return f"stopped process group {process_group} with SIGTERM"
+        time.sleep(0.1)
+    os.killpg(process_group, signal.SIGKILL)
+    return f"stopped process group {process_group} with SIGKILL"
+
+
+def terminate_spawned_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process_group = os.getpgid(process.pid)
+    os.killpg(process_group, signal.SIGTERM)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(process_group, signal.SIGKILL)
+        process.wait(timeout=5)
+
+
+def launch(run_id: str, timeout: float, allow_provider_credentials: bool) -> None:
+    run_id = validate_run_id(run_id)
+    state = state_dir(run_id)
+    evidence = evidence_dir(run_id)
+    if state.exists() or evidence.exists():
+        raise SystemExit(
+            f"Run {run_id!r} already exists. Use a new RUN_ID so evidence cannot mix."
+        )
+
+    sync = subprocess.run(
+        ["uv", "sync", "--locked"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if sync.returncode != 0:
+        sys.stderr.write(sync.stdout)
+        sys.stderr.write(sync.stderr)
+        raise SystemExit(f"uv sync --locked failed with exit code {sync.returncode}")
+
+    state.mkdir(parents=True)
+    evidence.mkdir(parents=True)
+    for name in ("config", "data", "cache", "state"):
+        (state / "home" / name).mkdir(parents=True)
+
+    html = state / "verification-ui.html"
+    html.write_text(
+        f"<!doctype html><html><body><main id=\"{marker(run_id)}\">"
+        "Vigyan verification UI</main></body></html>\n",
+        encoding="utf-8",
+    )
+    port = unused_loopback_port()
+    log = evidence / "server.log"
+    command = [
+        "uv",
+        "run",
+        "--no-sync",
+        "clai",
+        "web",
+        "--agent",
+        "src.vigyan.agent.research_agent:agent",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--html-source",
+        str(html),
+    ]
+    metadata: dict[str, Any] = {
+        "run_id": run_id,
+        "repo": str(ROOT),
+        "revision": git_revision(),
+        "git_status_at_launch": git_status(),
+        "version": project_version(),
+        "port": port,
+        "state": str(state),
+        "evidence": str(evidence),
+        "db_uri": str(state / "corpus.lance"),
+        "server_log": str(log),
+        "command": command,
+        "allow_provider_credentials": allow_provider_credentials,
+        "launched_at": dt.datetime.now(dt.UTC).isoformat(),
+    }
+    save_metadata(run_id, metadata)
+
+    with log.open("ab") as log_file:
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=run_env(run_id, allow_provider_credentials),
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    metadata["pid"] = process.pid
+    save_metadata(run_id, metadata)
+
+    try:
+        health, _ = wait_until_ready(run_id, port, timeout, process)
+        config_status, config, _ = request_url(port, "/api/configure")
+        if config_status != 200:
+            raise RuntimeError(f"/api/configure returned HTTP {config_status}")
+        if configure_model(config) != EXPECTED_MODEL:
+            raise RuntimeError(f"/api/configure does not contain {EXPECTED_MODEL}")
+        versions = package_versions(run_id)
+    except BaseException:
+        terminate_spawned_process(process)
+        raise
+
+    record = {
+        "run_id": run_id,
+        "revision": metadata["revision"],
+        "git_status_at_launch": metadata["git_status_at_launch"],
+        "version": metadata["version"],
+        "packages": versions,
+        "command": command,
+        "pid": process.pid,
+        "port": port,
+        "allow_provider_credentials": allow_provider_credentials,
+        "health": json.loads(health),
+        "configure": json.loads(config),
+        "state": str(state),
+        "evidence": str(evidence),
+    }
+    (evidence / "launch.json").write_text(
+        json.dumps(record, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"READY Vigyan {metadata['version']}")
+    print(f"url: http://127.0.0.1:{port}")
+    print(f"evidence: {evidence}")
+
+
+def doctor(run_id: str) -> None:
+    metadata = load_metadata(run_id)
+    errors: list[str] = []
+    notes: list[str] = []
+
+    current_revision = git_revision()
+    if metadata.get("revision") != current_revision:
+        errors.append("checkout revision changed after launch")
+    current_status = git_status()
+    if metadata.get("git_status_at_launch") != current_status:
+        errors.append("working tree changed after launch")
+    if metadata.get("version") != project_version():
+        errors.append("pyproject version changed after launch")
+
+    pid = metadata.get("pid")
+    if not isinstance(pid, int) or not process_is_alive(pid):
+        errors.append("CLai web process is not running")
+    elif not process_has_marker(pid, run_id):
+        errors.append("CLai web process marker does not match this run")
+    else:
+        notes.append(f"server_pid={pid}")
+
+    port = metadata.get("port")
+    if not isinstance(port, int):
+        errors.append("run metadata has no valid port")
+    else:
+        try:
+            health_status, health, _ = request_url(port, "/api/health")
+            root_status, root, _ = request_url(port, "/")
+            config_status, config, _ = request_url(port, "/api/configure")
+            if health_status != 200 or json.loads(health) != {"ok": True}:
+                errors.append("health response is not HTTP 200 with {\"ok\": true}")
+            if root_status != 200 or marker(run_id).encode() not in root:
+                errors.append("root page does not contain this run's isolated UI marker")
+            if config_status != 200:
+                errors.append(f"configure response is HTTP {config_status}")
+            elif configure_model(config) != EXPECTED_MODEL:
+                errors.append(f"configure response does not contain {EXPECTED_MODEL}")
+            else:
+                notes.append(f"configure={config.decode('utf-8', errors='replace')}")
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+            errors.append(f"server request failed: {exc}")
+
+    report = [
+        f"run_id={run_id}",
+        f"revision={current_revision}",
+        f"git_status={json.dumps(current_status)}",
+        f"version={project_version()}",
+        *notes,
+    ]
+    if errors:
+        report.extend(f"ERROR {error}" for error in errors)
+        report.append("UNHEALTHY")
+    else:
+        report.append("HEALTHY")
+    text = "\n".join(report) + "\n"
+    (evidence_dir(run_id) / "doctor.txt").write_text(text, encoding="utf-8")
+    sys.stdout.write(text)
+    if errors:
+        raise SystemExit(1)
+
+
+def evidence_path(run_id: str, relative: str) -> Path:
+    path = Path(relative)
+    if path.is_absolute() or ".." in path.parts or path.name in {"", "."}:
+        raise SystemExit("evidence path must be a safe relative file path")
+    target = evidence_dir(run_id) / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        raise SystemExit(f"refusing to overwrite evidence: {target}")
+    return target
+
+
+def run_command(
+    run_id: str,
+    relative_evidence: str,
+    timeout: float,
+    command: list[str],
+) -> None:
+    load_metadata(run_id)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise SystemExit("run requires a command after --")
+    target = evidence_path(run_id, relative_evidence)
+    timed_out = False
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=run_env(run_id),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        exit_code = int(process.returncode)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process_group = os.getpgid(process.pid)
+        os.killpg(process_group, signal.SIGTERM)
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(process_group, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+        exit_code = 124
+
+    transcript = (
+        f"$ {shlex.join(command)}\n"
+        f"cwd={ROOT}\n"
+        f"timeout_seconds={timeout:g}\n"
+        "--- stdout ---\n"
+        f"{stdout}"
+        f"{'\n' if stdout and not stdout.endswith(chr(10)) else ''}"
+        "--- stderr ---\n"
+        f"{stderr}"
+        f"{'\n' if stderr and not stderr.endswith(chr(10)) else ''}"
+        f"exit_code={exit_code}\n"
+        f"timed_out={str(timed_out).lower()}\n"
+    )
+    target.write_text(transcript, encoding="utf-8")
+    sys.stdout.write(transcript)
+    if exit_code != 0:
+        raise SystemExit(exit_code)
+
+
+def capture_request(run_id: str, path: str, relative_evidence: str) -> None:
+    metadata = load_metadata(run_id)
+    port = metadata.get("port")
+    if not isinstance(port, int):
+        raise SystemExit("run metadata has no valid port")
+    target = evidence_path(run_id, relative_evidence)
+    try:
+        status, body, content_type = request_url(port, path, timeout=5.0)
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        target.write_text(f"GET {path}\nrequest_error={exc}\n", encoding="utf-8")
+        raise SystemExit(1) from exc
+    text = (
+        f"GET http://127.0.0.1:{port}{path}\n"
+        f"status={status}\n"
+        f"content_type={content_type}\n"
+        "--- body ---\n"
+        f"{body.decode('utf-8', errors='replace')}"
+    )
+    if not text.endswith("\n"):
+        text += "\n"
+    target.write_text(text, encoding="utf-8")
+    sys.stdout.write(text)
+    if not 200 <= status < 300:
+        raise SystemExit(1)
+
+
+def show_path(run_id: str, kind: str) -> None:
+    metadata = load_metadata(run_id)
+    paths = {
+        "state": state_dir(run_id),
+        "evidence": evidence_dir(run_id),
+        "db": Path(str(metadata["db_uri"])),
+        "server-log": Path(str(metadata["server_log"])),
+    }
+    print(paths[kind])
+
+
+def cleanup(run_id: str) -> None:
+    metadata = load_metadata(run_id)
+    result = stop_server(run_id, metadata)
+    record = (
+        f"run_id={run_id}\n"
+        f"cleanup_at={dt.datetime.now(dt.UTC).isoformat()}\n"
+        f"server={result}\n"
+        f"removed_state={state_dir(run_id)}\n"
+        f"preserved_evidence={evidence_dir(run_id)}\n"
+    )
+    (evidence_dir(run_id) / "cleanup.txt").write_text(record, encoding="utf-8")
+    shutil.rmtree(state_dir(run_id))
+    print(record, end="")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    launch_parser = subparsers.add_parser("launch", help="start an isolated CLai web run")
+    launch_parser.add_argument("run_id", type=validate_run_id)
+    launch_parser.add_argument("--timeout", type=float, default=30.0)
+    launch_parser.add_argument(
+        "--allow-provider-credentials",
+        action="store_true",
+        help="pass inherited provider credentials to CLai for an approved live check",
+    )
+
+    doctor_parser = subparsers.add_parser("doctor", help="check an active run")
+    doctor_parser.add_argument("run_id", type=validate_run_id)
+
+    run_parser = subparsers.add_parser("run", help="capture a command in the run environment")
+    run_parser.add_argument("run_id", type=validate_run_id)
+    run_parser.add_argument("--evidence", required=True)
+    run_parser.add_argument("--timeout", type=float, default=180.0)
+    run_parser.add_argument("remainder", nargs="+")
+
+    request_parser = subparsers.add_parser("request", help="capture a GET from CLai web")
+    request_parser.add_argument("run_id", type=validate_run_id)
+    request_parser.add_argument("path")
+    request_parser.add_argument("--evidence", required=True)
+
+    path_parser = subparsers.add_parser("path", help="print an isolated run path")
+    path_parser.add_argument("run_id", type=validate_run_id)
+    path_parser.add_argument("kind", choices=("state", "evidence", "db", "server-log"))
+
+    cleanup_parser = subparsers.add_parser("cleanup", help="stop the server and remove run state")
+    cleanup_parser.add_argument("run_id", type=validate_run_id)
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    if args.command == "launch":
+        launch(args.run_id, args.timeout, args.allow_provider_credentials)
+    elif args.command == "doctor":
+        doctor(args.run_id)
+    elif args.command == "run":
+        run_command(args.run_id, args.evidence, args.timeout, args.remainder)
+    elif args.command == "request":
+        capture_request(args.run_id, args.path, args.evidence)
+    elif args.command == "path":
+        show_path(args.run_id, args.kind)
+    elif args.command == "cleanup":
+        cleanup(args.run_id)
+
+
+if __name__ == "__main__":
+    main()
