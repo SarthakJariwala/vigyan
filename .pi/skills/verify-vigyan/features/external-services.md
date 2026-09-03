@@ -30,7 +30,7 @@ Never print API keys. A local OpenAI-compatible double proves request compatibil
 
 ## Model-backed answers
 
-The global web agent is configured for `anthropic:claude-opus-4-8`. `run_research_query` may use that model or an explicit override. A cited-answer check needs a populated isolated corpus, working embeddings, and an approved model credential.
+The checkout-only contributor agent uses `anthropic:claude-opus-4-8`. Wheel consumers compose `ResearchCapability` with their own host Agent and model. A cited-answer check needs a populated isolated corpus, working embeddings, and an approved model credential.
 
 Capture:
 

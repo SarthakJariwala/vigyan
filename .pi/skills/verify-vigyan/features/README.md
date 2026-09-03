@@ -13,8 +13,8 @@ Choose the smallest feature set that reaches the changed user behavior. Start ev
 
 ## Feature map
 
-- [SDK behavior](sdk.md) covers public imports, ingestion and chunking orchestration, retrieval delegation, citation metadata, and environment-backed agent dependencies.
-- [CLai web](clai-web.md) covers the documented web command, server readiness, agent configuration, and the local UI route.
+- [SDK behavior](sdk.md) covers public imports, ingestion and chunking orchestration, retrieval delegation, and citation metadata.
+- [Contributor CLai web](clai-web.md) covers the checkout command, server readiness, agent configuration, and the local UI route.
 - [External services](external-services.md) defines the additional proof needed for GROBID, embeddings, LanceDB retrieval, and model-backed cited answers.
 
 ## Reporting skips

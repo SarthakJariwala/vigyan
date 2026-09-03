@@ -44,6 +44,8 @@ for hit in retriever.retrieve("protein folding with attention", top_k=5):
 
 `ResearchCapability` installs the citation instructions and `semantic_search` tool as one unit. It closes over the retriever, so the host agent keeps its own dependency type.
 
+Vigyan installs `pydantic-ai-slim` without model-provider extras. The host application owns its provider extra. The Anthropic example below needs `uv add 'pydantic-ai-slim[anthropic]'`.
+
 ```python
 from dataclasses import dataclass
 
@@ -88,33 +90,3 @@ class MyRetriever:
     ) -> list[QueryHit]:
         ...
 ```
-
-## Use the compatibility research agent
-
-`run_research_query()` keeps the original convenience API. It creates a LanceDB-backed retriever and returns the model's answer as a string.
-
-```python
-from vigyan.agent import run_research_query
-
-answer = run_research_query(
-    "What does this corpus say about protein folding with attention?",
-    db_uri="./vigyan_db",
-    embed_model="text-embedding-3-small",
-)
-print(answer)
-```
-
-## Run the CLai web agent
-
-CLai cannot pass Pydantic AI dependencies to an imported agent. The compatibility agent reads its retriever settings from the environment when CLai supplies `deps=None`.
-
-```bash
-export VIGYAN_DB_URI=./vigyan_db
-export VIGYAN_EMBED_MODEL=text-embedding-3-small
-export VIGYAN_TOP_K=8
-export VIGYAN_FILTERS="year >= 2020"
-
-uv run clai web --agent src.vigyan.agent.research_agent:agent
-```
-
-Explicit `ResearchAgentDeps` still take precedence when you call the compatibility agent from Python.
