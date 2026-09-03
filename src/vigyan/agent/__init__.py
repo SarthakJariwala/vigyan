@@ -1,3 +1,4 @@
+from .capability import ResearchCapability, ResearchRetriever
 from .research_agent import (
     ResearchAgentDeps,
     agent,
@@ -7,6 +8,8 @@ from .research_agent import (
 )
 
 __all__ = [
+    "ResearchCapability",
+    "ResearchRetriever",
     "ResearchAgentDeps",
     "agent",
     "build_deps",
