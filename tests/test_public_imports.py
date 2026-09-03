@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import importlib
+
+import pytest
+
 
 def test_root_package_exposes_metadata_only() -> None:
     import vigyan
@@ -25,3 +29,21 @@ def test_public_models_and_interfaces_import_from_named_modules() -> None:
     assert VectorStore.__name__ == "VectorStore"
     assert GrobidParser.__name__ == "GrobidParser"
     assert LanceDBVectorStore.__name__ == "LanceDBVectorStore"
+
+
+def test_agent_package_exports_only_reusable_research_types() -> None:
+    import vigyan.agent
+
+    assert vigyan.agent.__all__ == ["ResearchCapability", "ResearchRetriever"]
+    assert {
+        "ResearchAgentDeps",
+        "agent",
+        "build_deps",
+        "build_deps_from_env",
+        "run_research_query",
+    }.isdisjoint(vars(vigyan.agent))
+
+
+def test_legacy_research_agent_module_is_absent() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("vigyan.agent.research_agent")

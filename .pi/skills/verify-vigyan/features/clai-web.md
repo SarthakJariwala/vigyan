@@ -1,9 +1,9 @@
-# CLai web
+# Contributor CLai web
 
-The documented web entry point is:
+Contributors can run the checkout-only agent with this command:
 
 ```bash
-uv run clai web --agent src.vigyan.agent.research_agent:agent
+uv run clai web --agent vigyan_dev.clai_agent:agent
 ```
 
 `verify-vigyan launch` runs that entry point with `--no-sync`, a randomly selected loopback port, and a run-specific local HTML marker. The extra flags reduce port collision risk and avoid network access for UI assets without changing the imported agent. Readiness fails if the selected port serves any page other than this run's marker.
@@ -29,6 +29,6 @@ Expected observations:
 
 ## Claim boundary
 
-This recipe proves that the locked CLai package imports Vigyan's global agent and serves its HTTP shell. It does not call `/api/chat`, invoke `semantic_search`, open LanceDB, create embeddings, contact Anthropic, or validate answer citations.
+This recipe proves that the locked development tools import the checkout-only agent and serve its HTTP shell. It does not call `/api/chat`, invoke `semantic_search`, open LanceDB, create embeddings, contact Anthropic, or validate answer citations.
 
 A chat proof must capture the request, streamed response, retrieved evidence, and resulting citations. Follow [external-services.md](external-services.md) before making that request.

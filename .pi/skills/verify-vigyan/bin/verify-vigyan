@@ -185,7 +185,7 @@ def package_versions(run_id: str) -> dict[str, str]:
     script = (
         "import json; from importlib.metadata import version; "
         "print(json.dumps({n: version(n) for n in "
-        "['vigyan', 'clai', 'pydantic-ai', 'pytest']}))"
+        "['vigyan', 'clai', 'pydantic-ai-slim', 'pytest']}))"
     )
     result = subprocess.run(
         ["uv", "run", "--no-sync", "python", "-c", script],
@@ -295,7 +295,7 @@ def launch(run_id: str, timeout: float, allow_provider_credentials: bool) -> Non
         "clai",
         "web",
         "--agent",
-        "src.vigyan.agent.research_agent:agent",
+        "vigyan_dev.clai_agent:agent",
         "--host",
         "127.0.0.1",
         "--port",

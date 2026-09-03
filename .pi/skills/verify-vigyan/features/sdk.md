@@ -8,7 +8,7 @@ Vigyan's main user interface is its Python API. Verify calls through public impo
 - `vigyan.corpus`: `Corpus`, `CorpusIngestor`, and `CorpusRetriever`
 - `vigyan.parsers`: `GrobidParser`
 - `vigyan.vectordb`: `LanceDBVectorStore`
-- `vigyan.agent`: `ResearchCapability`, `ResearchRetriever`, `ResearchAgentDeps`, `agent`, dependency builders, and `run_research_query`
+- `vigyan.agent`: `ResearchCapability` and `ResearchRetriever`
 
 ## Deterministic baseline
 
@@ -25,7 +25,7 @@ The suite uses protocol fakes and mocked HTTP/model boundaries. It covers:
 - ingestion order, metadata, PDF hashing, page counts, references, chunk merging, sentence splitting, and standalone tables;
 - GROBID request fields, coordinate fallback, table extraction, and bibliography parsing;
 - retrieval delegation and `QueryHit` citation formatting;
-- public imports, shared `Corpus` components, capability installation on host agents, deferred capability loading, and environment-backed agent dependency resolution.
+- public imports, shared `Corpus` components, capability installation on host agents, and deferred capability loading.
 
 ## Focused public-SDK proof
 
