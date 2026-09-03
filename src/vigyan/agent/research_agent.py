@@ -6,51 +6,18 @@ from dataclasses import dataclass
 from pydantic_ai import Agent, RunContext
 
 from ..corpus import CorpusRetriever
-from ..models import QueryHit
 from ..vectordb import LanceDBVectorStore
+from .capability import ResearchCapability, ResearchRetriever
 
-SYSTEM_PROMPT = """\
-You are Vigyan, a scientific research assistant helping researchers answer
-questions based on a corpus of scientific papers indexed in a vector store.
-
-Your responsibilities:
-
-1. ALWAYS base your answers on the results returned by `semantic_search`.
-   - If the tool returns no relevant results, say so explicitly.
-   - Do NOT fabricate papers, results, or citations.
-
-2. Citations and support levels:
-   - Every specific scientific claim, numerical value, or experimental detail
-     MUST be supported by at least one retrieved chunk citation.
-   - Use numbered citations like [1], [2], [3] in the answer text.
-   - Reference the exact page range from the retrieved chunks.
-   - Inspect each QueryHit's `cited_ref_ids` and `cited_references` fields.
-     If a retrieved chunk states a claim while citing another paper, treat the
-     chunk as secondary support, not primary evidence.
-   - If a cited reference has `in_corpus=True`, run another `semantic_search`
-     scoped to `doc_id = '<resolved_doc_id>'` before presenting it as verified
-     primary evidence.
-   - If a cited reference has `in_corpus=False`, name the referenced paper/DOI
-     when available and state that the primary source is not ingested. Phrase
-     this as: "the corpus verifies that Paper A cites Paper B for this claim,
-     but Paper B is not currently in the corpus."
-
-   Example inline style:
-     "The authors report an accuracy of 93% on CIFAR-10 [1, pp. 3-4]."
-
-3. Intellectual honesty:
-   - If evidence is weak, conflicting, or incomplete, state this explicitly.
-   - Distinguish between what is directly supported by the text and interpretation.
-
-4. Scope:
-   - Prefer direct quotes or close paraphrases for key numerical results.
-   - If asked about something outside the corpus, state that limitation.
+_AGENT_INSTRUCTIONS = """\
+You are Vigyan, a scientific research assistant. Answer questions from the
+configured corpus of scientific papers.
 """
 
 
 @dataclass
 class ResearchAgentDeps:
-    retriever: CorpusRetriever
+    retriever: ResearchRetriever
     default_top_k: int = 8
     default_filters: str | None = None
 
@@ -101,37 +68,24 @@ def resolve_deps(deps: ResearchAgentDeps | None) -> ResearchAgentDeps:
     return deps if deps is not None else build_deps_from_env()
 
 
+def _research_capability_for_run(
+    ctx: RunContext[ResearchAgentDeps | None],
+) -> ResearchCapability:
+    deps = resolve_deps(ctx.deps)
+    return ResearchCapability(
+        deps.retriever,
+        default_top_k=deps.default_top_k,
+        default_filters=deps.default_filters,
+    )
+
+
 agent: Agent[ResearchAgentDeps | None] = Agent(
     "anthropic:claude-opus-4-8",
     deps_type=ResearchAgentDeps,
-    system_prompt=SYSTEM_PROMPT,
+    instructions=_AGENT_INSTRUCTIONS,
+    capabilities=[_research_capability_for_run],
     defer_model_check=True,
 )
-
-
-@agent.tool
-def semantic_search(
-    ctx: RunContext[ResearchAgentDeps | None],
-    query: str,
-    top_k: int | None = None,
-    filters: str | None = None,
-) -> list[QueryHit]:
-    """Search the scientific paper Corpus for text related to the query.
-
-    Args:
-        ctx: The run context with dependencies
-        query: Natural-language query describing what to look for
-        top_k: Maximum number of chunks to return (uses default if omitted)
-        filters: Optional filter expression to restrict documents/chunks
-
-    Returns:
-        A list of QueryHit objects with relevant chunks including page_span
-        and formatted citation strings.
-    """
-    deps = resolve_deps(ctx.deps)
-    k = top_k or deps.default_top_k
-    f = filters if filters is not None else deps.default_filters
-    return deps.retriever.retrieve(text=query, top_k=k, filters=f)
 
 
 def build_deps(

@@ -5,10 +5,10 @@ Vigyan's main user interface is its Python API. Verify calls through public impo
 ## Public entry points
 
 - `vigyan.models`: `Document`, `Paragraph`, `Chunk`, `DocumentReference`, `CitedReference`, and `QueryHit`
-- `vigyan.corpus`: `CorpusIngestor` and `CorpusRetriever`
+- `vigyan.corpus`: `Corpus`, `CorpusIngestor`, and `CorpusRetriever`
 - `vigyan.parsers`: `GrobidParser`
 - `vigyan.vectordb`: `LanceDBVectorStore`
-- `vigyan.agent`: `ResearchAgentDeps`, `agent`, and `run_research_query`
+- `vigyan.agent`: `ResearchCapability`, `ResearchRetriever`, `ResearchAgentDeps`, `agent`, dependency builders, and `run_research_query`
 
 ## Deterministic baseline
 
@@ -25,11 +25,13 @@ The suite uses protocol fakes and mocked HTTP/model boundaries. It covers:
 - ingestion order, metadata, PDF hashing, page counts, references, chunk merging, sentence splitting, and standalone tables;
 - GROBID request fields, coordinate fallback, table extraction, and bibliography parsing;
 - retrieval delegation and `QueryHit` citation formatting;
-- public imports and environment-backed agent dependency resolution.
+- public imports, shared `Corpus` components, capability installation on host agents, deferred capability loading, and environment-backed agent dependency resolution.
 
 ## Focused public-SDK proof
 
-When the change affects orchestration, write a short temporary script under the run state and invoke it through `verify-vigyan run`. Use `CorpusIngestor` or `CorpusRetriever`, not private helpers. Save structured output such as `Document.model_dump_json()` or `QueryHit.model_dump_json()` in the transcript.
+When the change affects orchestration, write a short temporary script under the run state and invoke it through `verify-vigyan run`. Use `Corpus`, `CorpusIngestor`, or `CorpusRetriever`, not private helpers. Save structured output such as `Document.model_dump_json()` or `QueryHit.model_dump_json()` in the transcript.
+
+When the change affects agent composition, install `ResearchCapability` on a host `Agent` with unrelated dependencies and drive `semantic_search` with `FunctionModel`. Capture the tool schema, forwarded arguments, and output. Exercise `defer_loading=True` when deferred loading is in scope.
 
 For a mutation, show both sides:
 

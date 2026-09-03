@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
+from pydantic_ai import Agent, ModelResponse
+from pydantic_ai.messages import TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from vigyan.agent import research_agent
@@ -74,19 +76,52 @@ class FakeCorpusRetriever:
         ]
 
 
-def _ctx(deps: research_agent.ResearchAgentDeps | None) -> SimpleNamespace:
-    return SimpleNamespace(deps=deps)
+def _search_model(**tool_args: Any) -> FunctionModel:
+    def respond(messages: list[Any], info: AgentInfo) -> ModelResponse:
+        search_returns = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+            and part.tool_name == "semantic_search"
+        ]
+        if not search_returns:
+            assert "semantic_search" in {tool.name for tool in info.function_tools}
+            assert info.instructions is not None
+            assert "You are Vigyan" in info.instructions
+            assert "Every specific scientific claim" in info.instructions
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="semantic_search", args=tool_args)]
+            )
+        return ModelResponse(parts=[TextPart(content="answer [1, pp. 2-3]")])
+
+    return FunctionModel(respond)
 
 
 def test_agent_package_exports_agent_and_deps_helpers() -> None:
-    from vigyan.agent import agent, build_deps, build_deps_from_env
+    from vigyan.agent import (
+        ResearchCapability,
+        ResearchRetriever,
+        agent,
+        build_deps,
+        build_deps_from_env,
+    )
 
+    assert isinstance(agent, Agent)
     assert agent is research_agent.agent
     assert build_deps is research_agent.build_deps
     assert build_deps_from_env is research_agent.build_deps_from_env
 
 
-def test_semantic_search_builds_default_deps_when_clai_provides_none(
+def test_clai_agent_path_loads_the_compatibility_agent() -> None:
+    from pydantic_ai._cli import load_agent
+
+    loaded_agent = load_agent("src.vigyan.agent.research_agent:agent")
+
+    assert isinstance(loaded_agent, Agent)
+
+
+def test_agent_builds_default_deps_when_clai_provides_none(
     monkeypatch,
 ) -> None:
     fake_store = FakeVectorStore()
@@ -102,9 +137,10 @@ def test_semantic_search_builds_default_deps_when_clai_provides_none(
     monkeypatch.setenv("VIGYAN_FILTERS", "year >= 2020")
     monkeypatch.setattr(research_agent, "LanceDBVectorStore", fake_store_factory)
 
-    hits = research_agent.semantic_search(_ctx(None), "protein folding")
+    with research_agent.agent.override(model=_search_model(query="protein folding")):
+        result = research_agent.agent.run_sync("Research protein folding", deps=None)
 
-    assert hits[0].doc_id == "doc-1"
+    assert result.output == "answer [1, pp. 2-3]"
     assert store_kwargs["uri"] == "/tmp/vigyan-test-db"
     assert store_kwargs["embedding_model"] == "text-embedding-3-small"
     assert fake_store.open_count == 1
@@ -113,7 +149,7 @@ def test_semantic_search_builds_default_deps_when_clai_provides_none(
     ]
 
 
-def test_semantic_search_prefers_explicit_agent_deps_and_tool_arguments(
+def test_agent_prefers_explicit_deps_and_tool_arguments(
     monkeypatch,
 ) -> None:
     unused_default_store = FakeVectorStore()
@@ -131,12 +167,14 @@ def test_semantic_search_prefers_explicit_agent_deps_and_tool_arguments(
         default_filters="year >= 2020",
     )
 
-    research_agent.semantic_search(
-        _ctx(deps),
-        "attention mechanisms",
-        top_k=2,
-        filters="doi = '10.1234/example'",
-    )
+    with research_agent.agent.override(
+        model=_search_model(
+            query="attention mechanisms",
+            top_k=2,
+            filters="doi = '10.1234/example'",
+        )
+    ):
+        research_agent.agent.run_sync("Research attention", deps=deps)
 
     assert explicit_retriever.retrieve_calls == [
         {
@@ -146,6 +184,62 @@ def test_semantic_search_prefers_explicit_agent_deps_and_tool_arguments(
         }
     ]
     assert unused_default_store.search_calls == []
+
+
+def test_agent_builds_a_fresh_capability_for_each_run() -> None:
+    first = FakeCorpusRetriever()
+    second = FakeCorpusRetriever()
+
+    with research_agent.agent.override(model=_search_model(query="first")):
+        research_agent.agent.run_sync(
+            "First run", deps=research_agent.ResearchAgentDeps(first)
+        )
+    with research_agent.agent.override(model=_search_model(query="second")):
+        research_agent.agent.run_sync(
+            "Second run", deps=research_agent.ResearchAgentDeps(second)
+        )
+
+    assert first.retrieve_calls == [{"text": "first", "top_k": 8, "filters": None}]
+    assert second.retrieve_calls == [
+        {"text": "second", "top_k": 8, "filters": None}
+    ]
+
+
+def test_run_research_query_returns_the_compatibility_agent_output(
+    monkeypatch,
+) -> None:
+    retriever = FakeCorpusRetriever()
+    build_kwargs: dict[str, Any] = {}
+
+    def fake_build_deps(**kwargs: Any) -> research_agent.ResearchAgentDeps:
+        build_kwargs.update(kwargs)
+        return research_agent.ResearchAgentDeps(
+            retriever,
+            default_top_k=kwargs["top_k"],
+            default_filters=kwargs["filters"],
+        )
+
+    monkeypatch.setattr(research_agent, "build_deps", fake_build_deps)
+
+    with research_agent.agent.override(model=_search_model(query="wrapper")):
+        answer = research_agent.run_research_query(
+            "Research through the wrapper",
+            db_uri="/tmp/vigyan-test-db",
+            embed_model="text-embedding-3-small",
+            top_k=5,
+            filters="year >= 2020",
+        )
+
+    assert answer == "answer [1, pp. 2-3]"
+    assert build_kwargs == {
+        "db_uri": "/tmp/vigyan-test-db",
+        "embed_model": "text-embedding-3-small",
+        "top_k": 5,
+        "filters": "year >= 2020",
+    }
+    assert retriever.retrieve_calls == [
+        {"text": "wrapper", "top_k": 5, "filters": "year >= 2020"}
+    ]
 
 
 def test_agent_can_run_with_test_model_without_explicit_deps(monkeypatch) -> None:

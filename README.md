@@ -1,84 +1,120 @@
-Vigyan — SDK for agentic search on scientific documents with citations
-======================================================================
+# Vigyan
 
-Overview
---------
+Vigyan parses scientific PDFs, indexes them in a vector store, and adds citation-grounded corpus research to Pydantic AI agents.
 
-Vigyan provides a small, clean Python SDK to parse scientific PDFs, embed the content, index it in a vector database, and answer research questions with citation-aware metadata (paper, page range, paragraph ids, etc.).
+## Install Vigyan
 
-Design Principles
------------------
+Vigyan requires Python 3.12 or later. Install the package with your project package manager.
 
-- Clear interfaces: `VectorStore` and `DocumentParser` decouple concerns.
-- Storage-agnostic domain models from `vigyan.models`: `Document`, `Chunk`, and `QueryHit`.
-- Adapter implementations: LanceDB vector store with built-in embedding, GROBID parser.
-- Domain-named Corpus modules: `CorpusIngestor`, `CorpusRetriever`, and `run_research_query` orchestrate ingestion, retrieval, and cited answers.
+```bash
+uv add vigyan
+```
 
-Install
--------
+GROBID must be running when you parse PDFs. Your embedding provider credentials must be available when you create or query a LanceDB store.
 
-Requires Python 3.12+.
+## Ingest and query one corpus
 
-Dependencies include `lancedb`, `httpx`, `lxml`, and `pydantic` (declared in `pyproject.toml`).
-
-Quick Start
------------
+Configure one `Corpus` with a parser and a store. The corpus builds its ingestor and retriever over those same components.
 
 ```python
-from vigyan.corpus import CorpusIngestor, CorpusRetriever
+from pathlib import Path
+
+from vigyan.corpus import Corpus
 from vigyan.parsers import GrobidParser
 from vigyan.vectordb import LanceDBVectorStore
+
+store = LanceDBVectorStore(
+    uri="./vigyan_db",
+    embedding_model="text-embedding-3-small",
+)
+parser = GrobidParser(server_url="http://localhost:8070")
+
+corpus = Corpus(parser=parser, store=store)
+corpus.ingestor.ingest_pdf(Path("paper.pdf").read_bytes())
+
+retriever = corpus.retriever
+for hit in retriever.retrieve("protein folding with attention", top_k=5):
+    print(hit.citation)
+    print(hit.text)
+```
+
+`DocumentParser` and `VectorStore` are protocols. You can replace GROBID or LanceDB without changing `Corpus`. `CorpusIngestor` and `CorpusRetriever` remain available for callers that need to compose those parts separately.
+
+## Add research to an existing agent
+
+`ResearchCapability` installs the citation instructions and `semantic_search` tool as one unit. It closes over the retriever, so the host agent keeps its own dependency type.
+
+```python
+from dataclasses import dataclass
+
+from pydantic_ai import Agent
+
+from vigyan.agent import ResearchCapability
+
+
+@dataclass
+class AppDeps:
+    project_id: str
+
+
+assistant = Agent(
+    "anthropic:claude-opus-4-8",
+    deps_type=AppDeps,
+    instructions="Answer questions for the current research project.",
+    capabilities=[ResearchCapability(retriever)],
+)
+
+result = assistant.run_sync(
+    "What accuracy did the indexed papers report?",
+    deps=AppDeps(project_id="protein-folding"),
+)
+print(result.output)
+```
+
+Research loads eagerly by default. In a general-purpose agent that rarely needs the corpus, use `ResearchCapability(retriever, defer_loading=True)`. Pydantic AI then loads the research instructions and tool together when the model selects the capability.
+
+The constructor accepts any object that implements `ResearchRetriever`. A custom retriever needs this method:
+
+```python
+from vigyan.models import QueryHit
+
+
+class MyRetriever:
+    def retrieve(
+        self,
+        text: str,
+        top_k: int = 8,
+        filters: str | None = None,
+    ) -> list[QueryHit]:
+        ...
+```
+
+## Use the compatibility research agent
+
+`run_research_query()` keeps the original convenience API. It creates a LanceDB-backed retriever and returns the model's answer as a string.
+
+```python
 from vigyan.agent import run_research_query
 
-# Configure adapters
-store = LanceDBVectorStore(embedding_model="text-embedding-3-small")
-parser = GrobidParser(server_url="http://localhost:8070")  # GROBID must be running
-
-# Ingest a PDF with automatic metadata via GROBID
-pdf_bytes = open("paper.pdf", "rb").read()
-ingestor = CorpusIngestor(parser=parser, store=store)
-ingestor.ingest_pdf(pdf_bytes, meta=None)
-
-# Retrieve relevant passages directly
-retriever = CorpusRetriever(store=store)
-hits = retriever.retrieve("protein folding with attention", top_k=5)
-for h in hits:
-    print(h.citation, "-", h.title)
-    print(h.text)
-
-# Or run the research agent for a cited answer
 answer = run_research_query(
     "What does this corpus say about protein folding with attention?",
     db_uri="./vigyan_db",
     embed_model="text-embedding-3-small",
 )
-print(answer.answer)
-for citation in answer.citations:
-    print(f"[{citation.index}] {citation.citation}")
+print(answer)
 ```
 
-CLai Web Agent
---------------
+## Run the CLai web agent
 
-`clai web` cannot pass Pydantic AI deps directly, so Vigyan's importable
-agent resolves vector-store deps from environment variables when explicit SDK
-deps are not provided:
+CLai cannot pass Pydantic AI dependencies to an imported agent. The compatibility agent reads its retriever settings from the environment when CLai supplies `deps=None`.
 
 ```bash
 export VIGYAN_DB_URI=./vigyan_db
 export VIGYAN_EMBED_MODEL=text-embedding-3-small
-# Optional:
-# export VIGYAN_TOP_K=8
-# export VIGYAN_FILTERS="year >= 2020"
+export VIGYAN_TOP_K=8
+export VIGYAN_FILTERS="year >= 2020"
 
 uv run clai web --agent src.vigyan.agent.research_agent:agent
 ```
 
-The normal SDK path still uses explicit deps via `run_research_query(...)`.
-
-Notes
------
-
-- OpenAI-compatible key must be available in the environment for embedding.
-- GROBID must be running for parsing and metadata extraction. You can swap in a different `DocumentParser` implementation if preferred.
-- The LanceDB store uses auto-embedding via the LanceDB registry, supporting OpenAI and other providers.
+Explicit `ResearchAgentDeps` still take precedence when you call the compatibility agent from Python.

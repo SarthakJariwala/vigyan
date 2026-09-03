@@ -13,7 +13,7 @@ dependencies = [
     "pydantic>=2.12.0",
     "tantivy>=0.25.0",
     "platformdirs>=4.5.1",
-    "pydantic-ai"
+    "pydantic-ai>=1.105.0",
 ]
 
 [build-system]
